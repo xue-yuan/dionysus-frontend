@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+@plugin "daisyui" {
+  themes: all;
+}
+
+@theme {
+  --font-serif: "Playfair Display", serif;
+  --font-sans: "Inter", sans-serif;
+}
+
+body {
+  font-family: var(--font-sans);
+}
+
+.btn {
+  @apply transition-all duration-200 ease-in-out active:scale-95;
+}
+
+.card {
+  @apply transition-all duration-300;
+}
