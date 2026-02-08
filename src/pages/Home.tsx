@@ -13,18 +13,45 @@ const Home: Component = () => {
     const [ingredients] = createResource(recipeService.getIngredients);
     const [tags] = createResource(recipeService.getTags);
 
+
+    const PERSISTENCE_KEY = 'dionysus_home_state_v1';
+
+    const getInitialState = () => {
+        const stored = localStorage.getItem(PERSISTENCE_KEY);
+        try {
+            return stored ? JSON.parse(stored) : null;
+        } catch {
+            return null;
+        }
+    };
+
+    const saved = getInitialState();
+
     const [state, setState] = createStore({
-        ownedIngredients: [] as string[],
-        selectedTags: [] as string[],
-        minStrength: 0,
+        ownedIngredients: (saved?.ownedIngredients || []) as string[],
+        selectedTags: (saved?.selectedTags || []) as string[],
+        minStrength: saved?.minStrength || 0,
         matches: [] as RecipeMatchResult[],
         loading: false,
-        sortDirection: 'desc' as 'asc' | 'desc',
-        showFavorites: false
+        sortDirection: (saved?.sortDirection || 'desc') as 'asc' | 'desc',
+        showFavorites: saved?.showFavorites || false
     });
 
     const [selectedRecipe, setSelectedRecipe] = createSignal<RecipeMatchResult | null>(null);
     const [searchQuery, setSearchQuery] = createSignal('');
+    const [isShuffling, setIsShuffling] = createSignal(false);
+    const [shuffleRecipe, setShuffleRecipe] = createSignal<RecipeMatchResult | null>(null);
+
+    createEffect(() => {
+        const persist = {
+            ownedIngredients: state.ownedIngredients,
+            selectedTags: state.selectedTags,
+            minStrength: state.minStrength,
+            sortDirection: state.sortDirection,
+            showFavorites: state.showFavorites
+        };
+        localStorage.setItem(PERSISTENCE_KEY, JSON.stringify(persist));
+    });
 
     const groupedIngredients = () => {
         const groups: Record<string, Ingredient[]> = {};
@@ -55,10 +82,21 @@ const Home: Component = () => {
         }
     };
 
+    const [toastMessage, setToastMessage] = createSignal<{ text: string, type: 'info' | 'success' | 'warning' | 'error' } | null>(null);
+
+    const showToast = (text: string, type: 'info' | 'success' | 'warning' | 'error' = 'info') => {
+        setToastMessage({ text, type });
+        setTimeout(() => setToastMessage(null), 3000);
+    };
+
     const clearInventory = () => {
-        if (confirm('Clear all selected ingredients?')) {
-            setState('ownedIngredients', []);
-        }
+        // @ts-ignore
+        document.getElementById('clear_confirm_modal').showModal();
+    };
+
+    const confirmClearInventory = () => {
+        setState('ownedIngredients', []);
+        showToast('Inventory cleared!', 'success');
     };
 
     const toggleSort = () => {
@@ -71,18 +109,29 @@ const Home: Component = () => {
 
     const feelingLucky = () => {
         const matches = exactMatches();
-        if (matches.length > 0) {
-            const random = matches[Math.floor(Math.random() * matches.length)];
-            setSelectedRecipe(random);
-        } else {
-            const near = nearMisses();
-            if (near.length > 0) {
-                const random = near[Math.floor(Math.random() * near.length)];
-                setSelectedRecipe(random);
-            } else {
-                alert("Add more ingredients to your shaker to get lucky!");
-            }
+
+        if (matches.length === 0) {
+            showToast("Add enough ingredients to unlock cocktails first!", "warning");
+            return;
         }
+
+        setIsShuffling(true);
+        let steps = 0;
+        const maxSteps = 25;
+        const interval = setInterval(() => {
+            const random = matches[Math.floor(Math.random() * matches.length)];
+            setShuffleRecipe(random);
+            steps++;
+
+            if (steps >= maxSteps) {
+                clearInterval(interval);
+                setTimeout(() => {
+                    setIsShuffling(false);
+                    setSelectedRecipe(random);
+                    setShuffleRecipe(null);
+                }, 500);
+            }
+        }, 100);
     };
 
     let timeout: number;
@@ -149,6 +198,27 @@ const Home: Component = () => {
 
     return (
         <div class="min-h-screen bg-base-100 text-base-content relative selection:bg-primary selection:text-primary-content">
+
+            <Show when={isShuffling()}>
+                <div class="fixed inset-0 z-[100] bg-base-100/90 backdrop-blur-md flex flex-col items-center justify-center p-6">
+                    <div class="text-center animate-pulse">
+                        <div class="text-8xl mb-8">🎰</div>
+                        <h2 class="text-4xl font-serif font-black tracking-tighter mb-4 text-primary">Finding Your Match...</h2>
+                        <Show when={shuffleRecipe()}>
+                            {(recipe) => (
+                                <div class="bg-base-200 p-8 rounded-3xl border border-primary/20 shadow-2xl max-w-sm w-full mx-auto transform transition-all duration-100 scale-105">
+                                    <h3 class="text-2xl font-black mb-2">{recipe().title}</h3>
+                                    <div class="flex justify-center gap-3 opacity-50 text-[10px] uppercase font-mono tracking-widest">
+                                        <span>{recipe().glassware}</span>
+                                        <span>•</span>
+                                        <span>{recipe().method}</span>
+                                    </div>
+                                </div>
+                            )}
+                        </Show>
+                    </div>
+                </div>
+            </Show>
 
             <RecipeDetailModal
                 recipe={selectedRecipe()}
@@ -451,8 +521,33 @@ const Home: Component = () => {
                     </div>
                 </div>
             </footer>
-        </div>
-    );
+
+            <Show when={toastMessage()}>
+                {(msg) => (
+                    <div class="toast toast-bottom toast-center z-[200]">
+                        <div class={`alert alert-${msg().type} shadow-lg`}>
+                            <span>{msg().text}</span>
+                        </div>
+                    </div>
+                )}
+            </Show>
+
+            <dialog id="clear_confirm_modal" class="modal">
+                <div class="modal-box">
+                    <h3 class="font-bold text-lg">Clear Inventory?</h3>
+                    <p class="py-4">This will remove all your selected ingredients. This action cannot be undone.</p>
+                    <div class="modal-action">
+                        <form method="dialog">
+                            <button class="btn btn-ghost mr-2">Cancel</button>
+                            <button class="btn btn-error text-white" onClick={confirmClearInventory}>Clear All</button>
+                        </form>
+                    </div>
+                </div>
+                <form method="dialog" class="modal-backdrop">
+                    <button>close</button>
+                </form>
+            </dialog>
+        </div>);
 };
 
 export default Home;
