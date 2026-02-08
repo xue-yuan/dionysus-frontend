@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js';
 import { createResource, Show, For } from 'solid-js';
 import { recipeService } from '../services/recipeService';
+import { getCategoryIcon } from '../utils/icons';
 import type { Recipe, RecipeMatchResult } from '../types';
 
 interface ModalProps {
@@ -33,18 +34,6 @@ export const RecipeDetailModal: Component<ModalProps> = (props) => {
         }, {} as Record<string, typeof ingredients>);
     };
 
-    const getCategoryIcon = (category: string) => {
-        const icons: Record<string, string> = {
-            'Spirit': '🥃',
-            'Liqueur': '🧪',
-            'Mixer': '🍋',
-            'Syrup': '🍯',
-            'Bitters': '💧',
-            'Garnish': '🌿',
-            'Other': '🔹'
-        };
-        return icons[category] || icons['Other'];
-    };
 
     const getTagColor = (type: string) => {
         return type === 'Equipment' ? 'badge-accent' : 'badge-primary';

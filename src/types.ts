@@ -60,7 +60,7 @@ export interface RecipeMatchResult {
     sweetness: number;
     sourness: number;
     strength: number;
-    tags?: string[];
+    tags?: Tag[];
     glassware: string;
     method: string;
 }

@@ -5,6 +5,7 @@ import type { Recipe, RecipeMatchResult } from '../types';
 interface RecipeCardProps {
     recipe: Recipe | RecipeMatchResult;
     onViewDetails: () => void;
+    missingIngredientName?: string;
 }
 
 
@@ -43,6 +44,20 @@ export const RecipeCard: Component<RecipeCardProps> = (props) => {
                         <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-base-content/20"></span>{props.recipe.glassware}</span>
                         <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-base-content/20"></span>{props.recipe.method}</span>
                     </div>
+
+                    <Show when={props.missingIngredientName}>
+                        <div class="mt-3 bg-warning/10 border border-warning/20 rounded-lg p-2 flex items-start gap-2">
+                            <div class="text-warning mt-0.5">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+                                </svg>
+                            </div>
+                            <div>
+                                <div class="text-[9px] font-black uppercase tracking-widest text-warning opacity-80 mb-0.5">Missing Item</div>
+                                <div class="text-xs font-bold text-warning-content">{props.missingIngredientName}</div>
+                            </div>
+                        </div>
+                    </Show>
                 </div>
 
                 <div class="grid grid-cols-3 gap-2 mb-4">
@@ -62,15 +77,11 @@ export const RecipeCard: Component<RecipeCardProps> = (props) => {
 
                 <Show when={props.recipe.tags && props.recipe.tags.length > 0}>
                     <div class="flex flex-wrap gap-1.5 mb-5 min-h-[1.5rem]">
-                        <For each={(props.recipe.tags || []).slice(0, 4)}>{(tag: string | { name: string, type?: string }) => {
-                            const tagName = typeof tag === 'string' ? tag : tag.name;
-                            const tagType = typeof tag === 'string' ? 'Palate' : (tag.type || 'Palate');
-                            return (
-                                <span class={`badge badge-xs ${getTagColor(tagType)} badge-outline border-opacity-20 text-[9px] uppercase font-black py-2 px-2`}>
-                                    {tagName}
-                                </span>
-                            );
-                        }}</For>
+                        <For each={(props.recipe.tags || []).slice(0, 4)}>{(tag) => (
+                            <span class={`badge badge-xs ${getTagColor(tag.type || 'Palate')} badge-outline border-opacity-20 text-[9px] uppercase font-black py-2 px-2`}>
+                                {tag.name}
+                            </span>
+                        )}</For>
                         <Show when={(props.recipe.tags?.length || 0) > 4}>
                             <span class="text-[9px] opacity-20 font-black self-center ml-1">+{(props.recipe.tags?.length || 0) - 4} MORE</span>
                         </Show>

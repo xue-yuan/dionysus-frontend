@@ -7,6 +7,7 @@ import type { Ingredient, RecipeMatchResult } from '../types';
 import { RecipeCard } from '../components/RecipeCard';
 import { RecipeDetailModal } from '../components/RecipeDetailModal';
 import { userStore } from '../stores/userStore';
+import { getCategoryIcon } from '../utils/icons';
 
 const Home: Component = () => {
     const [ingredients] = createResource(recipeService.getIngredients);
@@ -23,10 +24,15 @@ const Home: Component = () => {
     });
 
     const [selectedRecipe, setSelectedRecipe] = createSignal<RecipeMatchResult | null>(null);
+    const [searchQuery, setSearchQuery] = createSignal('');
 
     const groupedIngredients = () => {
         const groups: Record<string, Ingredient[]> = {};
+        const query = searchQuery().toLowerCase();
+
         ingredients()?.forEach(ing => {
+            if (query && !ing.name.toLowerCase().includes(query)) return;
+
             if (!groups[ing.category]) groups[ing.category] = [];
             groups[ing.category].push(ing);
         });
@@ -46,6 +52,12 @@ const Home: Component = () => {
             setState('selectedTags', (prev) => prev.filter(t => t !== id));
         } else {
             setState('selectedTags', (prev) => [...prev, id]);
+        }
+    };
+
+    const clearInventory = () => {
+        if (confirm('Clear all selected ingredients?')) {
+            setState('ownedIngredients', []);
         }
     };
 
@@ -125,17 +137,14 @@ const Home: Component = () => {
         return ingredients()?.find(i => i.id === id)?.name || "Ingredient";
     };
 
-    const getCategoryIcon = (category: string) => {
-        const icons: Record<string, string> = {
-            'Spirit': '🥃',
-            'Liqueur': '🧪',
-            'Mixer': '🍋',
-            'Syrup': '🍯',
-            'Bitters': '💧',
-            'Garnish': '🌿',
-            'Other': '🔹'
-        };
-        return icons[category] || icons['Other'];
+    const recommendedIngredients = () => {
+        const counts: Record<string, number> = {};
+        nearMisses().forEach(m => {
+            m.missing_ingredients?.forEach(id => {
+                counts[id] = (counts[id] || 0) + 1;
+            });
+        });
+        return counts;
     };
 
     return (
@@ -171,11 +180,39 @@ const Home: Component = () => {
             <div class="container mx-auto px-6 max-w-6xl pb-40">
 
                 <section class="py-20">
-                    <div class="flex items-start gap-6 mb-12">
-                        <span class="text-6xl font-serif italic text-primary/20 select-none">01</span>
-                        <div>
-                            <h2 class="text-4xl font-serif font-black tracking-tight mb-2">Inventory Setup</h2>
-                            <p class="text-base opacity-40 uppercase tracking-widest font-bold">Declare your available spirits and mixers</p>
+                    <div class="flex flex-col md:flex-row items-start md:items-end justify-between gap-6 mb-12">
+                        <div class="flex items-start gap-6">
+                            <span class="text-6xl font-serif italic text-primary/20 select-none">01</span>
+                            <div>
+                                <h2 class="text-4xl font-serif font-black tracking-tight mb-2">Inventory Setup</h2>
+                                <p class="text-base opacity-40 uppercase tracking-widest font-bold">Declare your available spirits and mixers</p>
+                            </div>
+                        </div>
+
+                        <div class="flex items-center gap-3 w-full md:w-auto">
+                            <div class="relative group w-full md:w-64">
+                                <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-base-content/30 group-focus-within:text-primary transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                    </svg>
+                                </div>
+                                <input
+                                    type="text"
+                                    placeholder="Search ingredients..."
+                                    class="input input-sm input-bordered w-full pl-9 rounded-full bg-base-200/50 focus:bg-base-100 focus:border-primary transition-all"
+                                    value={searchQuery()}
+                                    onInput={(e) => setSearchQuery(e.currentTarget.value)}
+                                />
+                            </div>
+
+                            <Show when={state.ownedIngredients.length > 0}>
+                                <button
+                                    class="btn btn-sm btn-ghost text-error hover:bg-error/10 rounded-full px-4"
+                                    onClick={clearInventory}
+                                >
+                                    <span class="text-[10px] font-black uppercase tracking-widest">Clear ({state.ownedIngredients.length})</span>
+                                </button>
+                            </Show>
                         </div>
                     </div>
 
@@ -192,15 +229,22 @@ const Home: Component = () => {
                                         <For each={items}>
                                             {(item) => (
                                                 <button
-                                                    class={`btn btn-md rounded-xl normal-case font-bold transition-all duration-300 border px-6 ${state.ownedIngredients.includes(item.id)
+                                                    class={`btn btn-md rounded-xl normal-case font-bold transition-all duration-300 border px-6 relative overflow-visible ${state.ownedIngredients.includes(item.id)
                                                         ? 'btn-primary shadow-xl shadow-primary/10 border-primary'
-                                                        : 'btn-ghost bg-base-200/30 border-transparent hover:border-base-300 opacity-60 hover:opacity-100'
+                                                        : recommendedIngredients()[item.id]
+                                                            ? 'btn-active border-warning/50 bg-warning/5 hover:bg-warning/10 text-base-content'
+                                                            : 'btn-ghost bg-base-200/30 border-transparent hover:border-base-300 opacity-60 hover:opacity-100'
                                                         }`}
                                                     onClick={() => toggleIngredient(item.id)}
                                                 >
                                                     {item.name}
                                                     <Show when={state.ownedIngredients.includes(item.id)}>
                                                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 ml-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" /></svg>
+                                                    </Show>
+                                                    <Show when={!state.ownedIngredients.includes(item.id) && recommendedIngredients()[item.id]}>
+                                                        <div class="absolute -top-2 -right-2 badge badge-xs badge-warning shadow-sm animate-pulse z-10 border-none">
+                                                            +{recommendedIngredients()[item.id]}
+                                                        </div>
                                                     </Show>
                                                 </button>
                                             )}
@@ -381,28 +425,13 @@ const Home: Component = () => {
                                 </div>
                                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
                                     <For each={nearMisses()}>
-                                        {(recipe) => (
-                                            <div
-                                                class="group relative bg-base-100 border border-base-200 rounded-2xl overflow-hidden hover:border-warning/50 transition-all duration-500 cursor-pointer flex flex-col h-full"
-                                                onClick={() => setSelectedRecipe(recipe)}
-                                            >
-                                                <div class="p-8 pb-4 flex-grow">
-                                                    <div class="flex justify-between items-start mb-4">
-                                                        <h3 class="text-2xl font-serif font-black tracking-tight leading-none group-hover:text-warning transition-colors">{recipe.title}</h3>
-                                                    </div>
-                                                    <div class="bg-warning/5 border border-warning/10 rounded-xl p-4 mb-6">
-                                                        <div class="text-[9px] font-black uppercase tracking-widest text-warning opacity-60 mb-1">Essential Missing:</div>
-                                                        <p class="text-xs font-bold text-warning-content">{getMissingName(recipe.missing_ingredients)}</p>
-                                                    </div>
-                                                </div>
-                                                <div class="px-8 pb-8 flex justify-between items-center border-t border-base-200/50 pt-4">
-                                                    <div class="flex items-center gap-3 text-[9px] font-black uppercase tracking-widest opacity-30">
-                                                        <span>{recipe.glassware}</span>
-                                                        <span class="w-1 h-1 rounded-full bg-base-content/20"></span>
-                                                        <span>{recipe.method}</span>
-                                                    </div>
-                                                    <span class="text-[10px] font-black uppercase tracking-widest text-warning opacity-0 group-hover:opacity-100 transition-opacity">View Recipe →</span>
-                                                </div>
+                                        {(recipe, i) => (
+                                            <div class="animate-in fade-in slide-in-from-bottom-6 duration-700 fill-mode-backwards" style={{ "animation-delay": `${i() * 100}ms` }}>
+                                                <RecipeCard
+                                                    recipe={recipe}
+                                                    onViewDetails={() => setSelectedRecipe(recipe)}
+                                                    missingIngredientName={getMissingName(recipe.missing_ingredients)}
+                                                />
                                             </div>
                                         )}
                                     </For>
