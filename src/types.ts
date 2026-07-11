@@ -2,12 +2,14 @@ export interface Ingredient {
     id: string;
     name: string;
     category: string;
+    translation_key?: string;
 }
 
 export interface RecipeIngredient {
     ingredient_id: string;
     name?: string;
     category?: string;
+    translation_key?: string;
     amount: string;
     unit: string;
 }
@@ -23,8 +25,10 @@ export interface Recipe {
     sweetness: number;
     sourness: number;
     strength: number;
+    translation_key?: string;
     ingredients?: RecipeIngredient[];
     tags?: Tag[];
+    total_ingredients: number;
     created_at: string;
 }
 
@@ -46,6 +50,10 @@ export interface CreateRecipeRequest {
         amount: string;
         unit: string;
     }[];
+    sweetness?: number;
+    sourness?: number;
+    strength?: number;
+    tags?: Tag[];
 }
 
 export interface RecipeMatchResult {
@@ -60,6 +68,7 @@ export interface RecipeMatchResult {
     sweetness: number;
     sourness: number;
     strength: number;
+    translation_key?: string;
     tags?: Tag[];
     glassware: string;
     method: string;

@@ -1,553 +1,617 @@
 import type { Component } from 'solid-js';
-import { createResource, For, Show, createEffect, createSignal } from 'solid-js';
+import { createResource, For, Show, createEffect, createSignal, createMemo } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import { A } from '@solidjs/router';
 import { recipeService } from '../services/recipeService';
-import type { Ingredient, RecipeMatchResult } from '../types';
+import type { RecipeMatchResult } from '../types';
 import { RecipeCard } from '../components/RecipeCard';
 import { RecipeDetailModal } from '../components/RecipeDetailModal';
 import { userStore } from '../stores/userStore';
-import { getCategoryIcon } from '../utils/icons';
+import { useI18n } from '../i18n';
 
 const Home: Component = () => {
-    const [ingredients] = createResource(recipeService.getIngredients);
-    const [tags] = createResource(recipeService.getTags);
+  const { t, tDynamic, locale, setLocale } = useI18n();
+  const [ingredients] = createResource(recipeService.getIngredients);
+  const [tags] = createResource(recipeService.getTags);
+
+  const PERSISTENCE_KEY = 'dionysus_studio_state_v2';
+  const getInitialState = () => {
+    const stored = localStorage.getItem(PERSISTENCE_KEY);
+    try {
+      return stored ? JSON.parse(stored) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const saved = getInitialState();
+  const [state, setState] = createStore({
+    ownedIngredients: (saved?.ownedIngredients || []) as string[],
+    selectedTags: (saved?.selectedTags || []) as string[],
+    minStrength: saved?.minStrength || 0,
+    matches: [] as RecipeMatchResult[],
+    loading: false,
+    sortDirection: (saved?.sortDirection || 'desc') as 'asc' | 'desc',
+    showFavorites: saved?.showFavorites || false,
+    allowSubstitutes: saved?.allowSubstitutes || false
+  });
+
+  const [selectedRecipe, setSelectedRecipe] = createSignal<RecipeMatchResult | null>(null);
+  let matchAbortController: AbortController | null = null;
+
+  const themesList = [
+    { key: 'violet', label: 'Violet Theme', color: 'bg-[#A000FF]' },
+    { key: 'cyan', label: 'Cyan Glacier Theme', color: 'bg-[#00F2FF]' },
+    { key: 'cyberpunk', label: 'Cyberpunk Theme', color: 'bg-[#FF007F]' },
+    { key: 'emerald', label: 'Emerald Theme', color: 'bg-[#10B981]' }
+  ];
 
 
-    const PERSISTENCE_KEY = 'dionysus_home_state_v1';
-
-    const getInitialState = () => {
-        const stored = localStorage.getItem(PERSISTENCE_KEY);
-        try {
-            return stored ? JSON.parse(stored) : null;
-        } catch {
-            return null;
-        }
+  createEffect(() => {
+    const persist = {
+      ownedIngredients: state.ownedIngredients,
+      selectedTags: state.selectedTags,
+      minStrength: state.minStrength,
+      sortDirection: state.sortDirection,
+      showFavorites: state.showFavorites,
+      allowSubstitutes: state.allowSubstitutes
     };
+    localStorage.setItem(PERSISTENCE_KEY, JSON.stringify(persist));
+  });
 
-    const saved = getInitialState();
+  const toggleIngredient = (id: string) => {
+    if (state.ownedIngredients.includes(id)) {
+      setState('ownedIngredients', (prev) => prev.filter(i => i !== id));
+    } else {
+      setState('ownedIngredients', (prev) => [...prev, id]);
+    }
+  };
 
-    const [state, setState] = createStore({
-        ownedIngredients: (saved?.ownedIngredients || []) as string[],
-        selectedTags: (saved?.selectedTags || []) as string[],
-        minStrength: saved?.minStrength || 0,
-        matches: [] as RecipeMatchResult[],
-        loading: false,
-        sortDirection: (saved?.sortDirection || 'desc') as 'asc' | 'desc',
-        showFavorites: saved?.showFavorites || false
+  const toggleTag = (id: string) => {
+    if (state.selectedTags.includes(id)) {
+      setState('selectedTags', (prev) => prev.filter(t => t !== id));
+    } else {
+      setState('selectedTags', (prev) => [...prev, id]);
+    }
+  };
+
+
+
+  const exactMatches = () => {
+    let list = state.matches || [];
+    if (state.showFavorites) {
+      list = list.filter(m => userStore.isFavorite(m.id));
+    }
+    return list
+      .filter(m => m.missing_count === 0)
+      .sort((a, b) => state.sortDirection === 'desc' ? b.strength - a.strength : a.strength - b.strength);
+  };
+
+  const nearMisses = () => {
+    let list = state.matches || [];
+    if (state.showFavorites) {
+      list = list.filter(m => userStore.isFavorite(m.id));
+    }
+    return list
+      .filter(m => m.missing_count === 1)
+      .sort((a, b) => state.sortDirection === 'desc' ? b.strength - a.strength : a.strength - b.strength);
+  };
+
+  const handleLucky = () => {
+    const exacts = exactMatches();
+    const pool = exacts.length > 0 ? exacts : nearMisses();
+    if (pool.length > 0) {
+      const random = pool[Math.floor(Math.random() * pool.length)];
+      setSelectedRecipe(random);
+    }
+  };
+
+  const handleClear = () => {
+    setState('ownedIngredients', []);
+    setState('selectedTags', []);
+  };
+
+  const addKit = (names: string[]) => {
+    const ings = ingredients() || [];
+    const idsToToggle = names
+      .map(name => ings.find(i => i.name === name)?.id)
+      .filter((id): id is string => !!id);
+
+    setState('ownedIngredients', prev => {
+      const next = [...prev];
+      idsToToggle.forEach(id => {
+        if (!next.includes(id)) {
+          next.push(id);
+        }
+      });
+      return next;
     });
+  };
 
-    const [selectedRecipe, setSelectedRecipe] = createSignal<RecipeMatchResult | null>(null);
-    const [searchQuery, setSearchQuery] = createSignal('');
-    const [isShuffling, setIsShuffling] = createSignal(false);
-    const [shuffleRecipe, setShuffleRecipe] = createSignal<RecipeMatchResult | null>(null);
+  createEffect((prevTimeout) => {
+    const owned = state.ownedIngredients;
+    const strength = state.minStrength;
+    const tagIds = state.selectedTags;
+    const allowSubs = state.allowSubstitutes;
 
-    createEffect(() => {
-        const persist = {
-            ownedIngredients: state.ownedIngredients,
-            selectedTags: state.selectedTags,
-            minStrength: state.minStrength,
-            sortDirection: state.sortDirection,
-            showFavorites: state.showFavorites
-        };
-        localStorage.setItem(PERSISTENCE_KEY, JSON.stringify(persist));
-    });
+    if (prevTimeout) clearTimeout(prevTimeout as number);
 
-    const groupedIngredients = () => {
-        const groups: Record<string, Ingredient[]> = {};
-        const query = searchQuery().toLowerCase();
+    if (owned.length === 0) {
+      if (matchAbortController) {
+        matchAbortController.abort();
+        matchAbortController = null;
+      }
+      setState('matches', []);
+      setState('loading', false);
+      return;
+    }
 
-        ingredients()?.forEach(ing => {
-            if (query && !ing.name.toLowerCase().includes(query)) return;
+    setState('loading', true);
 
-            if (!groups[ing.category]) groups[ing.category] = [];
-            groups[ing.category].push(ing);
-        });
-        return groups;
-    };
+    const timeout = setTimeout(async () => {
+      if (matchAbortController) {
+        matchAbortController.abort();
+      }
+      const controller = new AbortController();
+      matchAbortController = controller;
 
-    const toggleIngredient = (id: string) => {
-        if (state.ownedIngredients.includes(id)) {
-            setState('ownedIngredients', (prev) => prev.filter(i => i !== id));
-        } else {
-            setState('ownedIngredients', (prev) => [...prev, id]);
+      try {
+        const results = await recipeService.matchCocktails(owned, strength, tagIds, allowSubs, controller.signal);
+        setState('matches', results || []);
+      } catch (e: any) {
+        if (e.name !== 'AbortError') {
+          console.error(e);
+          setState('matches', []);
         }
-    };
-
-    const toggleTag = (id: string) => {
-        if (state.selectedTags.includes(id)) {
-            setState('selectedTags', (prev) => prev.filter(t => t !== id));
-        } else {
-            setState('selectedTags', (prev) => [...prev, id]);
+      } finally {
+        if (matchAbortController === controller) {
+          setState('loading', false);
+          matchAbortController = null;
         }
-    };
+      }
+    }, 300);
 
-    const [toastMessage, setToastMessage] = createSignal<{ text: string, type: 'info' | 'success' | 'warning' | 'error' } | null>(null);
+    return timeout;
+  });
 
-    const showToast = (text: string, type: 'info' | 'success' | 'warning' | 'error' = 'info') => {
-        setToastMessage({ text, type });
-        setTimeout(() => setToastMessage(null), 3000);
-    };
+  const [isCabinetOpen, setIsCabinetOpen] = createSignal(false);
+  const [cabinetCategory, setCabinetCategory] = createSignal('Spirit');
+  const [cabinetSearch, setCabinetSearch] = createSignal('');
 
-    const clearInventory = () => {
-        // @ts-ignore
-        document.getElementById('clear_confirm_modal').showModal();
-    };
+  const cabinetCategories = [
+    { key: 'Spirit', label: 'Spirits / 烈酒' },
+    { key: 'Liqueur', label: 'Liqueurs / 香甜酒' },
+    { key: 'Syrup', label: 'Syrups / 糖漿' },
+    { key: 'Mixer', label: 'Mixers / 副材料' },
+    { key: 'Bitters', label: 'Bitters / 苦精' },
+    { key: 'Garnish', label: 'Garnishes / 裝飾物' },
+    { key: 'Palate', label: 'Palate Specs / 風味' },
+    { key: 'Equipment', label: 'Equipment / 器具' }
+  ];
 
-    const confirmClearInventory = () => {
-        setState('ownedIngredients', []);
-        showToast('Inventory cleared!', 'success');
-    };
+  const filteredCabinetItems = createMemo(() => {
+    const cat = cabinetCategory();
+    const query = cabinetSearch().toLowerCase().trim();
 
-    const toggleSort = () => {
-        setState('sortDirection', current => current === 'desc' ? 'asc' : 'desc');
-    };
+    if (cat === 'Equipment' || cat === 'Palate') {
+      const list = tags()?.filter(t => t.type === cat) || [];
+      return list.filter(t => !query || t.name.toLowerCase().includes(query));
+    } else {
+      const list = ingredients()?.filter(i => i.category === cat) || [];
+      return list.filter(i => !query || i.name.toLowerCase().includes(query));
+    }
+  });
 
-    const toggleShowFavorites = () => {
-        setState('showFavorites', current => !current);
-    };
+  const isItemSelected = (id: string) => {
+    const cat = cabinetCategory();
+    if (cat === 'Equipment' || cat === 'Palate') {
+      return state.selectedTags.includes(id);
+    } else {
+      return state.ownedIngredients.includes(id);
+    }
+  };
 
-    const feelingLucky = () => {
-        const matches = exactMatches();
+  const toggleCabinetItem = (id: string) => {
+    const cat = cabinetCategory();
+    if (cat === 'Equipment' || cat === 'Palate') {
+      toggleTag(id);
+    } else {
+      toggleIngredient(id);
+    }
+  };
 
-        if (matches.length === 0) {
-            showToast("Add enough ingredients to unlock cocktails first!", "warning");
-            return;
-        }
+  return (
+    <div class="min-h-screen bg-black text-white font-sans">
+      <RecipeDetailModal
+        recipe={selectedRecipe()}
+        onClose={() => setSelectedRecipe(null)}
+      />
 
-        setIsShuffling(true);
-        let steps = 0;
-        const maxSteps = 25;
-        const interval = setInterval(() => {
-            const random = matches[Math.floor(Math.random() * matches.length)];
-            setShuffleRecipe(random);
-            steps++;
+      <nav class="fixed top-0 left-0 right-0 z-[100] px-8 lg:px-20 h-24 bg-black/60 backdrop-blur-2xl border-b border-white/5 flex items-center justify-between">
+        <div class="flex items-center gap-4">
+          <A href="/" class="group flex items-center gap-4">
+            <div class="w-10 h-10 rounded-xl bg-primary flex items-center justify-center text-primary-content font-black italic shadow-[0_0_20px_rgba(160,0,255,0.3)]">D.</div>
+            <span class="text-2xl font-black tracking-tightest">DIONYSUS</span>
+          </A>
+          <div class="breathing-light ml-2"></div>
+        </div>
 
-            if (steps >= maxSteps) {
-                clearInterval(interval);
-                setTimeout(() => {
-                    setIsShuffling(false);
-                    setSelectedRecipe(random);
-                    setShuffleRecipe(null);
-                }, 500);
-            }
-        }, 100);
-    };
+        <div class="flex items-center gap-4">
+          <div class="hidden md:flex items-center gap-2 p-1.5 glass-ether rounded-2xl border border-white/5 mr-4">
+            <A href="/" class="px-6 py-2.5 rounded-xl text-[12px] font-black uppercase tracking-widest bg-white/5 text-primary">
+              {t('nav.scanner')}
+            </A>
+            <A href="/recipes" class="px-6 py-2.5 rounded-xl text-[12px] font-black uppercase tracking-widest text-white/40 hover:text-white transition-all">
+              {t('nav.archive')}
+            </A>
+            <A href="/saved" class="px-6 py-2.5 rounded-xl text-[12px] font-black uppercase tracking-widest text-white/40 hover:text-white transition-all">
+              {t('nav.library')}
+            </A>
+          </div>
 
-    let timeout: number;
-    createEffect(() => {
-        const owned = state.ownedIngredients;
-        const strength = state.minStrength;
-        const tagIds = state.selectedTags;
+          <div class="flex items-center gap-2 p-1.5 bg-white/5 rounded-xl border border-white/10 backdrop-blur-md mr-2">
+            <For each={themesList}>
+              {(themeItem) => (
+                <button
+                  onClick={() => userStore.setTheme(themeItem.key)}
+                  class={`w-4 h-4 rounded-full ${themeItem.color} cursor-pointer transition-all hover:scale-125 relative flex items-center justify-center`}
+                  title={themeItem.label}
+                >
+                  <Show when={userStore.theme === themeItem.key}>
+                    <div class="w-1 h-1 rounded-full bg-white shadow-md"></div>
+                  </Show>
+                </button>
+              )}
+            </For>
+          </div>
 
-        if (owned.length === 0) {
-            setState('matches', []);
-            return;
-        }
+          <button
+            class="px-4 py-2 rounded-xl text-[11px] font-black tracking-widest text-white/30 hover:text-primary hover:bg-white/5 transition-all"
+            onClick={() => setLocale(locale() === 'en' ? 'zh-TW' : 'en')}
+          >
+            {locale() === 'en' ? 'TW' : 'EN'}
+          </button>
+        </div>
+      </nav>
 
-        setState('loading', true);
-        clearTimeout(timeout);
-        timeout = setTimeout(async () => {
-            try {
-                const results = await recipeService.matchCocktails(owned, strength, tagIds);
-                setState('matches', results || []);
-            } catch (e) {
-                console.error(e);
-                setState('matches', []);
-            } finally {
-                setState('loading', false);
-            }
-        }, 300);
-    });
-
-    const exactMatches = () => {
-        let list = state.matches || [];
-        if (state.showFavorites) {
-            list = list.filter(m => userStore.isFavorite(m.id));
-        }
-        return list
-            .filter(m => m.missing_count === 0)
-            .sort((a, b) => state.sortDirection === 'desc' ? b.strength - a.strength : a.strength - b.strength);
-    };
-
-    const nearMisses = () => {
-        let list = state.matches || [];
-        if (state.showFavorites) {
-            list = list.filter(m => userStore.isFavorite(m.id));
-        }
-        return list
-            .filter(m => m.missing_count === 1)
-            .sort((a, b) => state.sortDirection === 'desc' ? b.strength - a.strength : a.strength - b.strength);
-    };
-
-    const getMissingName = (missingIds?: string[]) => {
-        if (!missingIds || missingIds.length === 0) return "Unknown";
-        const id = missingIds[0];
-        return ingredients()?.find(i => i.id === id)?.name || "Ingredient";
-    };
-
-    const recommendedIngredients = () => {
-        const counts: Record<string, number> = {};
-        nearMisses().forEach(m => {
-            m.missing_ingredients?.forEach(id => {
-                counts[id] = (counts[id] || 0) + 1;
-            });
-        });
-        return counts;
-    };
-
-    return (
-        <div class="min-h-screen bg-base-100 text-base-content relative selection:bg-primary selection:text-primary-content">
-
-            <Show when={isShuffling()}>
-                <div class="fixed inset-0 z-[100] bg-base-100/90 backdrop-blur-md flex flex-col items-center justify-center p-6">
-                    <div class="text-center animate-pulse">
-                        <div class="text-8xl mb-8">🎰</div>
-                        <h2 class="text-4xl font-serif font-black tracking-tighter mb-4 text-primary">Finding Your Match...</h2>
-                        <Show when={shuffleRecipe()}>
-                            {(recipe) => (
-                                <div class="bg-base-200 p-8 rounded-3xl border border-primary/20 shadow-2xl max-w-sm w-full mx-auto transform transition-all duration-100 scale-105">
-                                    <h3 class="text-2xl font-black mb-2">{recipe().title}</h3>
-                                    <div class="flex justify-center gap-3 opacity-50 text-[10px] uppercase font-mono tracking-widest">
-                                        <span>{recipe().glassware}</span>
-                                        <span>•</span>
-                                        <span>{recipe().method}</span>
-                                    </div>
-                                </div>
-                            )}
-                        </Show>
-                    </div>
-                </div>
-            </Show>
-
-            <RecipeDetailModal
-                recipe={selectedRecipe()}
-                onClose={() => setSelectedRecipe(null)}
-            />
-
-            <nav class="navbar bg-base-100 sticky top-0 z-50 border-b border-base-200/50 backdrop-blur-xl bg-opacity-80 px-6 lg:px-12">
-                <div class="flex-1">
-                    <A href="/" class="group flex items-center gap-2">
-                        <span class="text-2xl font-serif font-black tracking-tighter hover:text-primary transition-colors">Dionysus 🍷</span>
-                    </A>
-                </div>
-                <div class="flex-none gap-6">
-                    <A href="/recipes" class="text-sm uppercase font-black tracking-widest opacity-40 hover:opacity-100 transition-opacity">Full Menu</A>
-                </div>
-            </nav>
-
-            <header class="relative overflow-hidden pt-20 pb-12 border-b border-base-200">
-                <div class="container mx-auto px-6 max-w-6xl relative z-10">
-                    <div class="max-w-3xl mb-12">
-                        <h1 class="text-8xl font-serif font-black leading-[0.9] tracking-tighter mb-8">
-                            Craft Your <br /><span class="text-primary italic">Perfect Serve.</span>
-                        </h1>
-                    </div>
-                </div>
-                <div class="absolute top-0 right-0 -translate-y-1/2 translate-x-1/4 w-[600px] h-[600px] bg-primary/5 rounded-full blur-[120px] pointer-events-none"></div>
-            </header>
-
-            <div class="container mx-auto px-6 max-w-6xl pb-40">
-
-                <section class="py-20">
-                    <div class="flex flex-col md:flex-row items-start md:items-end justify-between gap-6 mb-12">
-                        <div class="flex items-start gap-6">
-                            <span class="text-6xl font-serif italic text-primary/20 select-none">01</span>
-                            <div>
-                                <h2 class="text-4xl font-serif font-black tracking-tight mb-2">Inventory Setup</h2>
-                                <p class="text-base opacity-40 uppercase tracking-widest font-bold">Declare your available spirits and mixers</p>
-                            </div>
-                        </div>
-
-                        <div class="flex items-center gap-3 w-full md:w-auto">
-                            <div class="relative group w-full md:w-64">
-                                <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-base-content/30 group-focus-within:text-primary transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                                    </svg>
-                                </div>
-                                <input
-                                    type="text"
-                                    placeholder="Search ingredients..."
-                                    class="input input-sm input-bordered w-full pl-9 rounded-full bg-base-200/50 focus:bg-base-100 focus:border-primary transition-all"
-                                    value={searchQuery()}
-                                    onInput={(e) => setSearchQuery(e.currentTarget.value)}
-                                />
-                            </div>
-
-                            <Show when={state.ownedIngredients.length > 0}>
-                                <button
-                                    class="btn btn-sm btn-ghost text-error hover:bg-error/10 rounded-full px-4"
-                                    onClick={clearInventory}
-                                >
-                                    <span class="text-[10px] font-black uppercase tracking-widest">Clear ({state.ownedIngredients.length})</span>
-                                </button>
-                            </Show>
-                        </div>
-                    </div>
-
-                    <div class="space-y-12">
-                        <For each={Object.entries(groupedIngredients())}>
-                            {([category, items]) => (
-                                <div class="group">
-                                    <div class="flex items-center gap-3 mb-6">
-                                        <span class="text-2xl">{getCategoryIcon(category)}</span>
-                                        <h3 class="text-xs font-black uppercase tracking-[0.4em] opacity-30 group-hover:opacity-100 transition-opacity">{category}</h3>
-                                        <div class="h-px flex-grow bg-base-200 ml-4"></div>
-                                    </div>
-                                    <div class="flex flex-wrap gap-2">
-                                        <For each={items}>
-                                            {(item) => (
-                                                <button
-                                                    class={`btn btn-md rounded-xl normal-case font-bold transition-all duration-300 border px-6 relative overflow-visible ${state.ownedIngredients.includes(item.id)
-                                                        ? 'btn-primary shadow-xl shadow-primary/10 border-primary'
-                                                        : recommendedIngredients()[item.id]
-                                                            ? 'btn-active border-warning/50 bg-warning/5 hover:bg-warning/10 text-base-content'
-                                                            : 'btn-ghost bg-base-200/30 border-transparent hover:border-base-300 opacity-60 hover:opacity-100'
-                                                        }`}
-                                                    onClick={() => toggleIngredient(item.id)}
-                                                >
-                                                    {item.name}
-                                                    <Show when={state.ownedIngredients.includes(item.id)}>
-                                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 ml-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" /></svg>
-                                                    </Show>
-                                                    <Show when={!state.ownedIngredients.includes(item.id) && recommendedIngredients()[item.id]}>
-                                                        <div class="absolute -top-2 -right-2 badge badge-xs badge-warning shadow-sm animate-pulse z-10 border-none">
-                                                            +{recommendedIngredients()[item.id]}
-                                                        </div>
-                                                    </Show>
-                                                </button>
-                                            )}
-                                        </For>
-                                    </div>
-                                </div>
-                            )}
-                        </For>
-                    </div>
-                </section>
-
-                <div class="h-px w-full bg-gradient-to-r from-transparent via-base-200 to-transparent"></div>
-
-                <section class="py-20">
-                    <div class="flex items-start gap-6 mb-12">
-                        <span class="text-6xl font-serif italic text-secondary/20 select-none">02</span>
-                        <div>
-                            <div class="flex items-center gap-4 mb-2">
-                                <h2 class="text-4xl font-serif font-black tracking-tight">Palate Direction</h2>
-                                <span class="bg-secondary/10 text-secondary text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border border-secondary/20">Optional</span>
-                            </div>
-                            <p class="text-base opacity-40 uppercase tracking-widest font-bold">Calibrate your tasting preferences</p>
-                        </div>
-                    </div>
-
-                    <div class="grid grid-cols-1 lg:grid-cols-12 gap-16 items-start">
-                        <div class="lg:col-span-8 space-y-10">
-                            <div>
-                                <h4 class="text-xs font-black uppercase tracking-[0.4em] opacity-30 mb-6 flex items-center gap-3">
-                                    <span class="w-2 h-2 rounded-full bg-secondary shadow-[0_0_10px_rgba(var(--s),0.5)]"></span>
-                                    Taste Architecture
-                                </h4>
-                                <div class="flex flex-wrap gap-2">
-                                    <For each={tags()?.filter(t => t.type === 'Palate')}>{(tag) => (
-                                        <button
-                                            class={`btn btn-sm rounded-full px-5 transition-all duration-300 ${state.selectedTags.includes(tag.id)
-                                                ? 'btn-secondary shadow-lg shadow-secondary/10'
-                                                : 'btn-outline border-base-200 opacity-40 hover:opacity-100 border-dashed'
-                                                }`}
-                                            onClick={() => toggleTag(tag.id)}
-                                        >
-                                            {tag.name}
-                                        </button>
-                                    )}</For>
-                                </div>
-                            </div>
-
-                            <div>
-                                <h4 class="text-xs font-black uppercase tracking-[0.4em] opacity-30 mb-6 flex items-center gap-3">
-                                    <span class="w-2 h-2 rounded-full bg-accent shadow-[0_0_10px_rgba(var(--a),0.5)]"></span>
-                                    Available Hardware
-                                </h4>
-                                <div class="flex flex-wrap gap-2">
-                                    <For each={tags()?.filter(t => t.type === 'Equipment')}>{(tag) => (
-                                        <button
-                                            class={`btn btn-sm rounded-full px-5 transition-all duration-300 ${state.selectedTags.includes(tag.id)
-                                                ? 'btn-accent text-accent-content shadow-lg shadow-accent/10'
-                                                : 'btn-outline border-base-200 opacity-40 hover:opacity-100 border-dashed'
-                                                }`}
-                                            onClick={() => toggleTag(tag.id)}
-                                        >
-                                            {tag.name}
-                                        </button>
-                                    )}</For>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="lg:col-span-4 bg-base-200/30 p-8 rounded-3xl border border-base-200 backdrop-blur-sm">
-                            <div class="flex justify-between items-end mb-8">
-                                <div>
-                                    <h4 class="text-[10px] font-black uppercase tracking-[0.4em] opacity-30 mb-2">Potency</h4>
-                                    <p class="text-2xl font-serif font-black italic">Intensity {state.minStrength}</p>
-                                </div>
-                                <span class="text-xs font-mono opacity-20 uppercase tracking-widest">Level</span>
-                            </div>
-
-                            <input
-                                type="range"
-                                min="0"
-                                max="5"
-                                step="1"
-                                value={state.minStrength}
-                                class="range range-xs range-secondary"
-                                onInput={(e) => setState('minStrength', parseInt(e.currentTarget.value))}
-                            />
-                            <div class="flex justify-between text-[9px] font-black uppercase tracking-widest opacity-20 mt-4">
-                                <span>Soft</span>
-                                <span>High Proof</span>
-                            </div>
-                        </div>
-                    </div>
-                </section>
-
-                <div class="h-px w-full bg-gradient-to-r from-transparent via-base-200 to-transparent"></div>
-
-                <section class="py-20">
-                    <div class="flex items-center justify-between mb-16">
-                        <div class="flex items-start gap-6">
-                            <span class="text-6xl font-serif italic text-primary/20 select-none">03</span>
-                            <div>
-                                <h2 class="text-4xl font-serif font-black tracking-tight mb-2">Curation Result</h2>
-                                <div class="flex items-center gap-4">
-                                    <p class="text-base opacity-40 uppercase tracking-widest font-bold">{exactMatches().length} Matches Detected</p>
-                                    <button
-                                        class="btn btn-circle btn-ghost btn-xs text-primary hover:bg-primary/20 hover:scale-125 transition-all text-sm tooltip"
-                                        data-tip="I'm Feeling Lucky"
-                                        onClick={feelingLucky}
-                                    >
-                                        🎲
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="flex items-center gap-4 bg-base-200/50 p-2 rounded-full border border-base-200">
-                            <button
-                                class={`btn btn-sm btn-ghost rounded-full px-4 ${state.showFavorites ? 'bg-error text-white' : 'opacity-40'}`}
-                                onClick={toggleShowFavorites}
-                            >
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 mr-1" fill={state.showFavorites ? "currentColor" : "none"} viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
-                                </svg>
-                                <span class="text-[10px] font-black uppercase tracking-widest">{state.showFavorites ? 'Saved' : 'All'}</span>
-                            </button>
-                            <button
-                                class="btn btn-sm btn-ghost rounded-full px-4"
-                                onClick={toggleSort}
-                            >
-                                <span class="text-[10px] font-black uppercase tracking-widest opacity-40 mr-2">Sort:</span>
-                                <span class="text-[10px] font-black uppercase tracking-widest">{state.sortDirection === 'desc' ? 'Strong' : 'Light'}</span>
-                                <span class="ml-1 text-[10px]">{state.sortDirection === 'desc' ? '↓' : '↑'}</span>
-                            </button>
-                        </div>
-                    </div>
-
-                    <div class="min-h-[400px] relative">
-                        <Show when={state.loading}>
-                            <div class="absolute inset-x-0 top-0 h-40 flex items-center justify-center z-20">
-                                <span class="loading loading-dots loading-lg text-primary opacity-30"></span>
-                            </div>
-                        </Show>
-
-                        <Show when={state.ownedIngredients.length === 0}>
-                            <div class="py-24 flex flex-col items-center text-center border-2 border-dashed border-base-200 rounded-3xl group hover:border-primary/20 transition-colors">
-                                <div class="text-6xl mb-6 grayscale opacity-20 filter group-hover:grayscale-0 group-hover:opacity-60 transition-all duration-700">🧊</div>
-                                <h3 class="text-2xl font-serif font-black tracking-tight mb-2 opacity-20">Cabinet Idle</h3>
-                                <p class="text-sm opacity-20 uppercase tracking-[0.3em] font-bold">Declare ingredients in Step 1 to begin</p>
-                            </div>
-                        </Show>
-
-                        <Show when={state.ownedIngredients.length > 0 && !state.loading && exactMatches().length === 0 && nearMisses().length === 0}>
-                            <div class="py-24 flex flex-col items-center text-center border-2 border-dashed border-base-200 rounded-3xl">
-                                <div class="text-6xl mb-6 grayscale opacity-20 filter">🔍</div>
-                                <h3 class="text-2xl font-serif font-black tracking-tight mb-2 opacity-20">No Direct Matches</h3>
-                                <p class="text-sm opacity-20 uppercase tracking-[0.3em] font-bold">Try adjusting filters or adding more items</p>
-                            </div>
-                        </Show>
-
-                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
-                            <For each={exactMatches()}>
-                                {(recipe, i) => (
-                                    <div class="animate-in fade-in slide-in-from-bottom-6 duration-700 fill-mode-backwards" style={{ "animation-delay": `${i() * 100}ms` }}>
-                                        <RecipeCard
-                                            recipe={recipe}
-                                            onViewDetails={() => setSelectedRecipe(recipe)}
-                                        />
-                                    </div>
-                                )}
-                            </For>
-                        </div>
-
-                        <Show when={nearMisses().length > 0}>
-                            <div class="mt-24 space-y-12">
-                                <div class="flex items-center gap-6">
-                                    <h3 class="text-[11px] font-black uppercase tracking-[0.5em] text-warning opacity-60">Missing One Item</h3>
-                                    <div class="h-px flex-grow bg-warning/10"></div>
-                                </div>
-                                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
-                                    <For each={nearMisses()}>
-                                        {(recipe, i) => (
-                                            <div class="animate-in fade-in slide-in-from-bottom-6 duration-700 fill-mode-backwards" style={{ "animation-delay": `${i() * 100}ms` }}>
-                                                <RecipeCard
-                                                    recipe={recipe}
-                                                    onViewDetails={() => setSelectedRecipe(recipe)}
-                                                    missingIngredientName={getMissingName(recipe.missing_ingredients)}
-                                                />
-                                            </div>
-                                        )}
-                                    </For>
-                                </div>
-                            </div>
-                        </Show>
-                    </div>
-                </section>
+      <div class="studio-layout pt-32">
+        <div class={`cabinet-overlay ${isCabinetOpen() ? 'open' : ''}`} onClick={() => setIsCabinetOpen(false)}>
+          <div class="cabinet-card p-10 gap-8" onClick={(e) => e.stopPropagation()}>
+            <div class="flex items-center justify-between border-b border-white/5 pb-6">
+              <div>
+                <h2 class="text-3xl font-black text-white tracking-wide uppercase">{t('home.cabinet.title')}</h2>
+                <p class="text-xs uppercase tracking-widest text-white/30 mt-1">{t('home.cabinet.subtitle')}</p>
+              </div>
+              <button
+                onClick={() => setIsCabinetOpen(false)}
+                class="w-12 h-12 rounded-xl bg-white/5 hover:bg-white/10 flex items-center justify-center border border-white/5 text-white/60 hover:text-white transition-colors"
+              >
+                ✕
+              </button>
             </div>
 
-            <footer class="bg-base-200/30 border-t border-base-200 py-12">
-                <div class="container mx-auto px-6 max-w-6xl flex flex-col md:flex-row justify-between items-center gap-8">
-                    <div class="flex items-center gap-3">
-                        <span class="text-3xl font-serif font-black italic text-primary">D.</span>
-                        <div class="h-8 w-px bg-base-300"></div>
-                        <span class="text-[10px] font-mono opacity-20 uppercase tracking-[0.4em]">Codebar's Guide 2026</span>
-                    </div>
-                </div>
-            </footer>
+            <div class="flex-grow flex gap-10 overflow-hidden min-h-0">
+              <div class="w-72 flex flex-col gap-2 overflow-y-auto pr-4 border-r border-white/5">
+                <For each={cabinetCategories}>
+                  {(cat) => (
+                    <button
+                      onClick={() => {
+                        setCabinetCategory(cat.key);
+                        setCabinetSearch('');
+                      }}
+                      class={`w-full text-left px-6 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all border ${cabinetCategory() === cat.key
+                        ? 'bg-primary text-black border-primary font-black shadow-[0_10px_20px_rgba(160,0,255,0.15)]'
+                        : 'bg-white/[0.01] border-white/5 text-white/40 hover:text-white hover:bg-white/5'
+                        }`}
+                    >
+                      {cat.label}
+                    </button>
+                  )}
+                </For>
+              </div>
 
-            <Show when={toastMessage()}>
-                {(msg) => (
-                    <div class="toast toast-bottom toast-center z-[200]">
-                        <div class={`alert alert-${msg().type} shadow-lg`}>
-                            <span>{msg().text}</span>
-                        </div>
-                    </div>
-                )}
-            </Show>
-
-            <dialog id="clear_confirm_modal" class="modal">
-                <div class="modal-box">
-                    <h3 class="font-bold text-lg">Clear Inventory?</h3>
-                    <p class="py-4">This will remove all your selected ingredients. This action cannot be undone.</p>
-                    <div class="modal-action">
-                        <form method="dialog">
-                            <button class="btn btn-ghost mr-2">Cancel</button>
-                            <button class="btn btn-error text-white" onClick={confirmClearInventory}>Clear All</button>
-                        </form>
-                    </div>
+              <div class="flex-1 flex flex-col gap-6 overflow-hidden">
+                <div class="relative">
+                  <input
+                    type="text"
+                    placeholder={t('home.cabinet.searchPlaceholder')}
+                    class="input-studio w-full pr-10"
+                    value={cabinetSearch()}
+                    onInput={(e) => setCabinetSearch(e.currentTarget.value)}
+                  />
+                  <Show when={cabinetSearch()}>
+                    <button
+                      onClick={() => setCabinetSearch('')}
+                      class="absolute right-3 top-1/2 -translate-y-1/2 text-white/20 hover:text-white"
+                    >
+                      ✕
+                    </button>
+                  </Show>
                 </div>
-                <form method="dialog" class="modal-backdrop">
-                    <button>close</button>
-                </form>
-            </dialog>
-        </div>);
+
+                <div class="flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                  <div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                    <For each={filteredCabinetItems()}>
+                      {(item) => {
+                        const selected = () => isItemSelected(item.id);
+                        return (
+                          <button
+                            onClick={() => toggleCabinetItem(item.id)}
+                            class={`px-6 py-5 rounded-2xl border transition-all text-xs font-black uppercase tracking-widest text-left relative overflow-hidden flex flex-col justify-between h-28 group ${selected()
+                              ? 'bg-primary/10 border-primary text-primary shadow-[0_0_20px_rgba(160,0,255,0.15)]'
+                              : 'bg-white/[0.02] border-white/5 text-white/60 hover:border-white/20 hover:bg-white/5'
+                              }`}
+                          >
+                            <span class="text-[11px] opacity-40">
+                              {'category' in item
+                                ? tDynamic('ingredient.category.' + item.category.toLowerCase(), item.category)
+                                : tDynamic('tag.type.' + item.type.toLowerCase(), item.type)}
+                            </span>
+                            <span class="text-sm font-bold text-white group-hover:text-primary transition-colors pr-4 leading-snug">
+                              {'translation_key' in item
+                                ? tDynamic(item.translation_key || '', item.name)
+                                : tDynamic('tag.' + item.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''), item.name)}
+                            </span>
+                            <Show when={selected()}>
+                              <div class="absolute top-3 right-3 w-2 h-2 rounded-full bg-primary animate-pulse shadow-[0_0_8px_rgba(160,0,255,0.8)]"></div>
+                            </Show>
+                          </button>
+                        );
+                      }}
+                    </For>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex items-center justify-between border-t border-white/5 pt-6 bg-transparent">
+              <div class="flex items-center gap-4 flex-wrap max-w-[70%]">
+                <span class="text-xs font-black uppercase tracking-widest text-white/30">Currently Stocked:</span>
+                <div class="flex flex-wrap gap-2 max-h-[60px] overflow-y-auto pr-2 custom-scrollbar">
+                  <For each={state.ownedIngredients}>
+                    {(id) => {
+                      const ing = ingredients()?.find(i => i.id === id);
+                      return ing ? (
+                        <button
+                          onClick={() => toggleIngredient(id)}
+                          class="px-3 py-1 rounded-xl bg-white/5 border border-white/10 hover:border-red-500/50 hover:bg-red-500/10 hover:text-red-500 text-xs font-bold text-white/70 uppercase tracking-widest transition-all"
+                        >
+                          {tDynamic(ing.translation_key || '', ing.name || '')} ✕
+                        </button>
+                      ) : null;
+                    }}
+                  </For>
+                </div>
+              </div>
+              <div class="flex items-center gap-4">
+                <Show when={state.ownedIngredients.length > 0 || state.selectedTags.length > 0}>
+                  <button
+                    onClick={handleClear}
+                    class="px-6 py-3 border border-red-500/20 hover:border-red-500 hover:bg-red-500/10 rounded-xl text-xs font-black uppercase tracking-widest text-red-500 transition-all"
+                  >
+                    [ {t('home.inventory.clear', { count: state.ownedIngredients.length + state.selectedTags.length }) as string} ]
+                  </button>
+                </Show>
+                <button
+                  onClick={() => setIsCabinetOpen(false)}
+                  class="px-8 py-3.5 bg-primary text-black font-black uppercase tracking-widest text-xs rounded-xl hover:scale-[1.02] active:scale-[0.98] transition-all"
+                >
+                  {t('home.cabinet.confirm')}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <main class="studio-workbench flex-grow bg-gradient-to-br from-black via-zinc-950 to-indigo-950/20 overflow-y-auto custom-scrollbar">
+          <div class="px-8 lg:px-16 pt-0 max-w-[1700px] mx-auto relative min-h-[80vh] flex flex-col">
+
+            <div class="glass-ether border-white/5 rounded-3xl p-8 mb-8 space-y-6">
+              <div class="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-6">
+                <div class="flex items-center gap-6">
+                  <div class="bg-white/[0.01] rounded-2xl p-5 border border-white/5 flex flex-col justify-center min-w-[200px]">
+                    <span class="text-xs font-black uppercase tracking-widest text-white/30 mb-1">{t('home.cabinet.storage')}</span>
+                    <span class="text-3xl font-black text-primary">{state.ownedIngredients.length} {t('home.cabinet.active')}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsCabinetOpen(true)}
+                    class="px-8 py-5 bg-primary text-black font-black uppercase tracking-widest text-xs rounded-2xl hover:scale-[1.02] active:scale-[0.98] transition-all shadow-[0_15px_30px_rgba(160,0,255,0.2)]"
+                  >
+                    ⚡ {t('home.cabinet.open')}
+                  </button>
+                </div>
+
+                <div class="flex-1 grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div class="bg-white/[0.01] rounded-2xl p-4 border border-white/5 flex flex-col justify-center">
+                    <div class="flex justify-between items-center mb-2">
+                      <span class="text-xs font-black uppercase tracking-widest text-white/30">{t('home.palate.potency')}</span>
+                      <span class="text-sm font-black text-primary">{state.minStrength} / 5</span>
+                    </div>
+                    <input
+                      type="range" min="0" max="5" step="1"
+                      value={state.minStrength}
+                      class="range range-xs range-primary bg-white/5"
+                      onInput={(e) => setState('minStrength', parseInt(e.currentTarget.value))}
+                    />
+                  </div>
+
+                  <div class="bg-white/[0.01] rounded-2xl p-4 border border-white/5 flex items-center justify-between">
+                    <div class="flex flex-col">
+                      <span class="text-xs font-black uppercase tracking-widest text-white/30">{t('home.cabinet.substitutes')}</span>
+                      <span class="text-xs font-bold text-white/60 mt-1">{t('home.cabinet.allowSubstitutes')}</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={state.allowSubstitutes}
+                      onChange={() => setState('allowSubstitutes', v => !v)}
+                      class="checkbox checkbox-primary"
+                    />
+                  </div>
+
+                  <div class="flex items-center justify-end">
+                    <div class="flex items-center p-1 bg-white/5 rounded-2xl border border-white/10 backdrop-blur-2xl transition-all hover:border-white/20 hover:bg-white/[0.08] shadow-2xl w-full">
+                      <button
+                        onClick={handleLucky}
+                        class="flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-widest text-white/60 hover:text-white hover:bg-white/5 transition-all flex items-center justify-center gap-2"
+                      >
+                        🎲 {t('home.results.randomize')}
+                      </button>
+
+                      <div class="w-px h-6 bg-white/10 mx-1"></div>
+
+                      <button
+                        class={`flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${state.showFavorites ? 'bg-secondary text-white shadow-lg' : 'text-white/60 hover:text-white hover:bg-white/5'}`}
+                        onClick={() => setState('showFavorites', v => !v)}
+                      >
+                        ❤️ {t('home.results.saved')}
+                      </button>
+
+                      <div class="w-px h-6 bg-white/10 mx-1"></div>
+
+                      <button
+                        class="px-4 py-3 rounded-xl text-xs font-black uppercase tracking-widest text-white/60 hover:text-white hover:bg-white/5 transition-all flex items-center justify-center"
+                        onClick={() => setState('sortDirection', d => d === 'desc' ? 'asc' : 'desc')}
+                      >
+                        {state.sortDirection === 'desc' ? '↓' : '↑'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex flex-wrap items-center gap-6 pt-5 border-t border-white/5 text-xs text-white/40">
+                <div class="flex items-center gap-2">
+                  <span class="font-black uppercase tracking-widest text-xs">{t('home.inventory.quickKits')}:</span>
+                  <div class="flex gap-4">
+                    <button onClick={() => addKit(['London Dry Gin', 'Campari', 'Sweet Vermouth', 'Orange Twist'])} class="hover:text-primary transition-colors font-bold uppercase tracking-widest text-xs">Negroni</button>
+                    <button onClick={() => addKit(['Bourbon', 'Simple Syrup', 'Fresh Lemon Juice', 'Egg White', 'Angostura Bitters'])} class="hover:text-primary transition-colors font-bold uppercase tracking-widest text-xs">Whiskey Sour</button>
+                    <button onClick={() => addKit(['Blanco Tequila', 'Cointreau', 'Fresh Lime Juice', 'Salt'])} class="hover:text-primary transition-colors font-bold uppercase tracking-widest text-xs">Margarita</button>
+                  </div>
+                </div>
+
+                <div class="h-4 w-px bg-white/10 hidden md:block"></div>
+
+                <div class="flex items-center gap-2">
+                  <span class="font-black uppercase tracking-widest text-xs">Filters:</span>
+                  <Show when={state.selectedTags.length > 0} fallback={<span class="italic text-sm">No active palate filter tags</span>}>
+                    <div class="flex flex-wrap gap-1.5">
+                      <For each={state.selectedTags}>
+                        {(id) => {
+                          const tag = tags()?.find(t => t.id === id);
+                          return (
+                            <button onClick={() => toggleTag(id)} class="px-2.5 py-1 rounded bg-secondary/10 border border-secondary/20 text-xs font-bold text-secondary uppercase tracking-widest hover:bg-red-500/10 hover:border-red-500/30 hover:text-red-500 transition-all">
+                              {tag?.name} ✕
+                            </button>
+                          );
+                        }}
+                      </For>
+                    </div>
+                  </Show>
+                </div>
+              </div>
+            </div>
+
+            <div class="h-1 w-full mb-8 relative overflow-hidden bg-white/5 rounded-full">
+              <div
+                class={`absolute inset-0 bg-primary shadow-[0_0_15px_rgba(160,0,255,0.5)] transition-all duration-500 ${state.loading ? 'translate-x-0' : '-translate-x-full'}`}
+                style={{
+                  animation: state.loading ? 'loading-scan 2s infinite linear' : 'none'
+                }}
+              ></div>
+            </div>
+
+            <div class="flex-1 relative">
+              <Show when={state.ownedIngredients.length === 0}>
+                <div class="absolute inset-x-0 top-32 flex flex-col items-center text-center animate-in fade-in duration-1000">
+                  <span class="text-8xl mb-12 opacity-20 grayscale">🍸</span>
+                  <h3 class="text-[14px] font-black tracking-[1.2em] text-white/30 uppercase">{t('home.results.cabinetIdle')}</h3>
+                </div>
+              </Show>
+
+              <Show when={!state.loading && state.ownedIngredients.length > 0 && exactMatches().length === 0 && nearMisses().length === 0}>
+                <div class="absolute inset-x-0 top-32 flex flex-col items-center text-center animate-in zoom-in-95 duration-500">
+                  <Show when={state.showFavorites} fallback={<span class="text-6xl mb-12 opacity-20">🕵️‍♂️</span>}>
+                    <span class="text-6xl mb-12 opacity-20">💔</span>
+                  </Show>
+                  <h3 class="text-[14px] font-black tracking-[0.8em] text-white/30 uppercase">
+                    {state.showFavorites ? t('home.results.noSavedProtocols') : t('home.results.noProtocolsMatched')}
+                  </h3>
+                  <p class="text-[11px] text-white/10 font-black uppercase tracking-[0.4em] mt-6">
+                    {state.showFavorites ? t('home.results.noSavedProtocolsSubtitle') : t('home.results.noProtocolsMatchedSubtitle')}
+                  </p>
+                  <button
+                    onClick={() => state.showFavorites ? setState('showFavorites', false) : handleClear()}
+                    class="mt-12 px-8 py-3 border border-white/10 rounded-xl text-[11px] font-black uppercase tracking-widest text-white/30 hover:text-white hover:border-white/20 transition-all font-black"
+                  >
+                    [ {state.showFavorites ? t('home.results.deactivateFilter') : t('home.results.clearFilters')} ]
+                  </button>
+                </div>
+              </Show>
+
+              <div class={`transition-opacity duration-300 mt-12 ${state.loading ? 'opacity-40 pointer-events-none' : 'opacity-100'}`}>
+                <Show when={exactMatches().length > 0}>
+                  <div class="mb-32 space-y-6">
+                    <div class="flex items-center gap-4 border-b border-white/5 pb-2">
+                      <h2 class="text-[13px] font-black uppercase tracking-[0.4em] text-primary whitespace-nowrap">{t('home.results.readyToMix')}</h2>
+                      <div class="h-px flex-1 bg-gradient-to-r from-primary/20 to-transparent"></div>
+                      <div class="w-1.5 h-1.5 rounded-full bg-primary animate-pulse shadow-[0_0_10px_rgba(160,0,255,0.5)]"></div>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-6">
+                      <For each={exactMatches()}>
+                        {(recipe, i) => (
+                          <div class="card-entrance" style={{ "animation-delay": `${(i() % 12) * 80}ms` }}>
+                            <RecipeCard
+                              recipe={recipe}
+                              onViewDetails={() => setSelectedRecipe(recipe)}
+                            />
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  </div>
+                </Show>
+
+                <Show when={nearMisses().length > 0}>
+                  <div class="space-y-6">
+                    <div class="flex items-center gap-4 border-b border-white/5 pb-2">
+                      <h2 class="text-[13px] font-black uppercase tracking-[0.4em] text-white/40 whitespace-nowrap">{t('home.results.missingOne')}</h2>
+                      <div class="h-px flex-1 bg-gradient-to-r from-white/10 to-transparent"></div>
+                      <div class="w-1.5 h-1.5 rounded-full bg-white/20"></div>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-6">
+                      <For each={nearMisses()}>
+                        {(recipe, i) => (
+                          <div class="card-entrance" style={{ "animation-delay": `${(i() % 12) * 80}ms` }}>
+                            <RecipeCard
+                              recipe={recipe}
+                              onViewDetails={() => setSelectedRecipe(recipe)}
+                              missingIngredientName={
+                                recipe.missing_ingredients?.[0] ?
+                                  (() => {
+                                    const ing = ingredients()?.find(i => i.id === recipe.missing_ingredients![0]);
+                                    return ing ? tDynamic(ing.translation_key || '', ing.name) : undefined;
+                                  })() :
+                                  undefined
+                              }
+                            />
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  </div>
+                </Show>
+
+                <footer class="mt-auto pt-24 pb-12 border-t border-white/5 w-full text-center">
+                  <span class="text-[11px] text-white/30 font-black uppercase tracking-[0.4em]">DIONYSUS © 2026</span>
+                </footer>
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  );
 };
 
 export default Home;

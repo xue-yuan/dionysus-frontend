@@ -9,13 +9,16 @@ export const recipeService = {
         return res.json();
     },
 
-    async getRecipes(params: { page?: number; limit?: number; sort?: 'asc' | 'desc' } = {}): Promise<{ items: Recipe[], total: number }> {
+    async getRecipes(params: { page?: number; limit?: number; sort?: 'asc' | 'desc'; search?: string } = {}, signal?: AbortSignal): Promise<{ items: Recipe[], total: number }> {
         const query = new URLSearchParams({
             page: (params.page || 1).toString(),
             limit: (params.limit || 12).toString(),
             sort: params.sort || 'desc'
         });
-        const res = await fetch(`${API_BASE}/recipes?${query.toString()}`);
+        if (params.search) {
+            query.append("search", params.search);
+        }
+        const res = await fetch(`${API_BASE}/recipes?${query.toString()}`, { signal });
         if (!res.ok) throw new Error("Failed to fetch recipes");
         return res.json();
     },
@@ -45,15 +48,17 @@ export const recipeService = {
         return res.json();
     },
 
-    async matchCocktails(ownedIngredientIds: string[], minStrength: number = 0, tagIds: string[] = []): Promise<RecipeMatchResult[]> {
+    async matchCocktails(ownedIngredientIds: string[], minStrength: number = 0, tagIds: string[] = [], allowSubstitutes: boolean = false, signal?: AbortSignal): Promise<RecipeMatchResult[]> {
         const res = await fetch(`${API_BASE}/match-cocktails`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 owned_ingredient_ids: ownedIngredientIds,
                 min_strength: minStrength,
-                tag_ids: tagIds
+                tag_ids: tagIds,
+                allow_substitutes: allowSubstitutes
             }),
+            signal
         });
         if (!res.ok) throw new Error("Failed to match cocktails");
         return res.json();
