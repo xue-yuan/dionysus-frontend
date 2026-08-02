@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&family=Urbanist:ital,wght@0,100..900;1,100..900&display=swap');
+/* Fonts are linked from index.html; an @import here would block first paint. */
 @import "tailwindcss";
 
 @plugin "daisyui" {
@@ -9,60 +9,60 @@
   --font-serif: "Urbanist", sans-serif;
   --font-sans: "Inter", sans-serif;
 
-  --color-primary: #A000FF;
+  --color-primary: #a000ff;
   --color-primary-content: #ffffff;
 
-  --color-secondary: #00F2FF;
+  --color-secondary: #00f2ff;
   --color-secondary-content: #000000;
 
-  --color-accent: #EC4899;
+  --color-accent: #ec4899;
 
   --color-base-100: #000000;
   --color-base-200: #050505;
-  --color-base-300: #0A0A0A;
+  --color-base-300: #0a0a0a;
   --color-base-content: #ffffff;
 }
 
 html[data-app-theme="violet"],
 html[data-app-theme="violet"] [data-theme] {
-  --color-primary: #A000FF !important;
+  --color-primary: #a000ff !important;
   --color-primary-content: #ffffff !important;
-  --color-secondary: #00F2FF !important;
+  --color-secondary: #00f2ff !important;
   --color-secondary-content: #000000 !important;
-  --color-accent: #EC4899 !important;
+  --color-accent: #ec4899 !important;
   --primary-shadow-rgb: 160, 0, 255;
   --secondary-shadow-rgb: 0, 242, 255;
 }
 
 html[data-app-theme="cyan"],
 html[data-app-theme="cyan"] [data-theme] {
-  --color-primary: #00F2FF !important;
+  --color-primary: #00f2ff !important;
   --color-primary-content: #000000 !important;
-  --color-secondary: #6366F1 !important;
+  --color-secondary: #6366f1 !important;
   --color-secondary-content: #ffffff !important;
-  --color-accent: #A000FF !important;
+  --color-accent: #a000ff !important;
   --primary-shadow-rgb: 0, 242, 255;
   --secondary-shadow-rgb: 99, 102, 241;
 }
 
 html[data-app-theme="cyberpunk"],
 html[data-app-theme="cyberpunk"] [data-theme] {
-  --color-primary: #FF007F !important;
+  --color-primary: #ff007f !important;
   --color-primary-content: #ffffff !important;
-  --color-secondary: #00F2FF !important;
+  --color-secondary: #00f2ff !important;
   --color-secondary-content: #000000 !important;
-  --color-accent: #F59E0B !important;
+  --color-accent: #f59e0b !important;
   --primary-shadow-rgb: 255, 0, 127;
   --secondary-shadow-rgb: 0, 242, 255;
 }
 
 html[data-app-theme="emerald"],
 html[data-app-theme="emerald"] [data-theme] {
-  --color-primary: #10B981 !important;
+  --color-primary: #10b981 !important;
   --color-primary-content: #ffffff !important;
-  --color-secondary: #F59E0B !important;
+  --color-secondary: #f59e0b !important;
   --color-secondary-content: #000000 !important;
-  --color-accent: #3B82F6 !important;
+  --color-accent: #3b82f6 !important;
   --primary-shadow-rgb: 16, 185, 129;
   --secondary-shadow-rgb: 245, 158, 11;
 }
@@ -122,7 +122,7 @@ body {
 }
 
 .text-cyan {
-  color: #00F2FF;
+  color: #00f2ff;
   text-shadow: 0 0 10px rgba(0, 242, 255, 0.4);
 }
 
@@ -209,7 +209,9 @@ body {
   background: rgba(15, 15, 15, 0.9);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 32px;
-  box-shadow: 0 50px 120px rgba(0, 0, 0, 0.9), 0 0 60px rgba(160, 0, 255, 0.05);
+  box-shadow:
+    0 50px 120px rgba(0, 0, 0, 0.9),
+    0 0 60px rgba(160, 0, 255, 0.05);
   transform: scale(0.95);
   transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
   overflow: hidden;
@@ -238,7 +240,6 @@ body {
 }
 
 @keyframes studio-breathe {
-
   0%,
   100% {
     opacity: 0.4;

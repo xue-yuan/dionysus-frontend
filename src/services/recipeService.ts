@@ -1,66 +1,87 @@
-import type { CreateRecipeRequest, Ingredient, Recipe, RecipeMatchResult, Tag } from "../types";
+import type { Ingredient, Recipe, RecipeMatchResult, Tag } from "../types";
 
-const API_BASE = "http://localhost:8080/api";
+// Relative by default so the deployed app talks to its own origin. Set
+// VITE_API_BASE when the API lives somewhere else; in development Vite's proxy
+// forwards /api to the Go server.
+const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
+
+async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { signal });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  return res.json();
+}
+
+async function errorMessage(res: Response): Promise<string> {
+  try {
+    const body = await res.json();
+    if (body?.error) return body.error;
+  } catch {
+    // fall through to the status text
+  }
+  return `${res.status} ${res.statusText}`;
+}
+
+export interface RecipePage {
+  items: Recipe[];
+  total: number;
+}
 
 export const recipeService = {
-    async getIngredients(): Promise<Ingredient[]> {
-        const res = await fetch(`${API_BASE}/ingredients`);
-        if (!res.ok) throw new Error("Failed to fetch ingredients");
-        return res.json();
-    },
+  getIngredients(signal?: AbortSignal): Promise<Ingredient[]> {
+    return get<Ingredient[]>("/ingredients", signal);
+  },
 
-    async getRecipes(params: { page?: number; limit?: number; sort?: 'asc' | 'desc'; search?: string } = {}, signal?: AbortSignal): Promise<{ items: Recipe[], total: number }> {
-        const query = new URLSearchParams({
-            page: (params.page || 1).toString(),
-            limit: (params.limit || 12).toString(),
-            sort: params.sort || 'desc'
-        });
-        if (params.search) {
-            query.append("search", params.search);
-        }
-        const res = await fetch(`${API_BASE}/recipes?${query.toString()}`, { signal });
-        if (!res.ok) throw new Error("Failed to fetch recipes");
-        return res.json();
-    },
+  getTags(signal?: AbortSignal): Promise<Tag[]> {
+    return get<Tag[]>("/tags", signal);
+  },
 
-    async getRecipe(id: string): Promise<Recipe> {
-        const res = await fetch(`${API_BASE}/recipes/${id}`);
-        if (!res.ok) throw new Error("Failed to fetch recipe");
-        return res.json();
-    },
+  getRecipes(
+    params: { page?: number; limit?: number; sort?: "asc" | "desc"; search?: string } = {},
+    signal?: AbortSignal,
+  ): Promise<RecipePage> {
+    const query = new URLSearchParams({
+      page: String(params.page ?? 1),
+      limit: String(params.limit ?? 12),
+      sort: params.sort ?? "desc",
+    });
+    if (params.search) query.append("search", params.search);
+    return get<RecipePage>(`/recipes?${query}`, signal);
+  },
 
-    async createRecipe(req: CreateRecipeRequest): Promise<Recipe> {
-        const res = await fetch(`${API_BASE}/recipes`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(req),
-        });
-        if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.error || "Failed to create recipe");
-        }
-        return res.json();
-    },
+  // Used by the saved page so it fetches only the favourited recipes rather
+  // than downloading the whole archive and filtering in the browser.
+  getRecipesByIds(ids: string[], signal?: AbortSignal): Promise<RecipePage> {
+    if (ids.length === 0) return Promise.resolve({ items: [], total: 0 });
+    const query = new URLSearchParams({ ids: ids.join(",") });
+    return get<RecipePage>(`/recipes/by-ids?${query}`, signal);
+  },
 
-    async getTags(): Promise<Tag[]> {
-        const res = await fetch(`${API_BASE}/tags`);
-        if (!res.ok) throw new Error("Failed to fetch tags");
-        return res.json();
-    },
+  getRecipe(id: string, signal?: AbortSignal): Promise<Recipe> {
+    return get<Recipe>(`/recipes/${id}`, signal);
+  },
 
-    async matchCocktails(ownedIngredientIds: string[], minStrength: number = 0, tagIds: string[] = [], allowSubstitutes: boolean = false, signal?: AbortSignal): Promise<RecipeMatchResult[]> {
-        const res = await fetch(`${API_BASE}/match-cocktails`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                owned_ingredient_ids: ownedIngredientIds,
-                min_strength: minStrength,
-                tag_ids: tagIds,
-                allow_substitutes: allowSubstitutes
-            }),
-            signal
-        });
-        if (!res.ok) throw new Error("Failed to match cocktails");
-        return res.json();
-    }
+  matchCocktails(
+    params: {
+      ownedIngredientIds: string[];
+      minStrength?: number;
+      tagIds?: string[];
+      allowSubstitutes?: boolean;
+    },
+    signal?: AbortSignal,
+  ): Promise<RecipeMatchResult[]> {
+    return fetch(`${API_BASE}/match-cocktails`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        owned_ingredient_ids: params.ownedIngredientIds,
+        min_strength: params.minStrength ?? 0,
+        tag_ids: params.tagIds ?? [],
+        allow_substitutes: params.allowSubstitutes ?? false,
+      }),
+      signal,
+    }).then(async (res) => {
+      if (!res.ok) throw new Error(await errorMessage(res));
+      return res.json();
+    });
+  },
 };

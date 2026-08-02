@@ -1,2 +1,10 @@
-allowBuilds:
-  esbuild: true
+catalog:
+  vite: npm:@voidzero-dev/vite-plus-core@0.2.7
+  vite-plus: 0.2.7
+overrides:
+  vite: "catalog:"
+peerDependencyRules:
+  # vite resolves to @voidzero-dev/vite-plus-core, whose 0.x version satisfies no
+  # plugin's `vite: ^6 || ^7 || ^8` peer range. Without this, a strict install fails.
+  allowAny:
+    - vite
