@@ -1,330 +1,453 @@
 /* Fonts are linked from index.html; an @import here would block first paint. */
 @import "tailwindcss";
 
-@plugin "daisyui" {
-  themes: all;
-}
-
+/*
+ * The look is a printed bar manual, not a dashboard: paper ground, ink text,
+ * hairline rules instead of cards stacked on cards, one accent used sparingly.
+ * There is deliberately no glow, no backdrop blur outside the modal scrim, and
+ * no border radius above 2px — those were what made the old UI generic.
+ */
 @theme {
-  --font-serif: "Urbanist", sans-serif;
-  --font-sans: "Inter", sans-serif;
+  --font-display: "Fraunces", ui-serif, Georgia, "Songti TC", serif;
+  --font-sans: "Karla", ui-sans-serif, system-ui, "PingFang TC", "Noto Sans TC", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
-  --color-primary: #a000ff;
-  --color-primary-content: #ffffff;
+  --color-paper: #f7f3ec;
+  --color-paper-raised: #fffdf8;
+  --color-paper-sunk: #efe9dd;
 
-  --color-secondary: #00f2ff;
-  --color-secondary-content: #000000;
+  --color-ink: #1b1714;
+  --color-ink-muted: #5c5348;
+  --color-ink-faint: #938878;
 
-  --color-accent: #ec4899;
+  --color-rule: #e2dace;
+  --color-rule-strong: #cabfab;
 
-  --color-base-100: #000000;
-  --color-base-200: #050505;
-  --color-base-300: #0a0a0a;
-  --color-base-content: #ffffff;
+  --color-accent: #7a2e2e;
+  --color-accent-soft: #eee0da;
+  --color-accent-deep: #5d2020;
+
+  /* Ingredient status. Kept off every accent hue so a Negroni's missing bottle
+     never disappears into the oxblood palette. */
+  --color-flag-sub: #8a6a2f;
+  --color-flag-missing: #a94f2e;
+
+  /* Behind a sheet. A token because night needs a darker one to read as a scrim. */
+  --color-scrim: rgb(27 23 20 / 0.45);
+
+  --radius-card: 2px;
 }
 
-html[data-app-theme="violet"],
-html[data-app-theme="violet"] [data-theme] {
-  --color-primary: #a000ff !important;
-  --color-primary-content: #ffffff !important;
-  --color-secondary: #00f2ff !important;
-  --color-secondary-content: #000000 !important;
-  --color-accent: #ec4899 !important;
-  --primary-shadow-rgb: 160, 0, 255;
-  --secondary-shadow-rgb: 0, 242, 255;
+/*
+ * Night: the same book read under a bar's low light — warm black paper and
+ * cream ink, not a grey dashboard dark. It follows the system until the reader
+ * chooses with the header toggle, which sets `data-scheme` on <html>. The block
+ * is written twice because a media query and an attribute selector cannot
+ * share a rule; both outrank the `:root` block Tailwind emits.
+ */
+@media (prefers-color-scheme: dark) {
+  html:not([data-scheme="light"]) {
+    color-scheme: dark;
+    --color-paper: #171412;
+    --color-paper-raised: #1f1b18;
+    /* Lighter than paper, not darker: at night a pressed or hovered surface
+       rises out of the dark rather than sinking into it. */
+    --color-paper-sunk: #29241f;
+    --color-ink: #ece4d6;
+    --color-ink-muted: #b4a999;
+    --color-ink-faint: #857b6c;
+    --color-rule: #2f2924;
+    --color-rule-strong: #4a423a;
+    /* Oxblood lifted toward rose so it holds 5.8:1 on the dark paper, and kept
+       clear of the orange "missing" flag beside it. */
+    --color-accent: #cc7a80;
+    --color-accent-soft: #3a2326;
+    --color-accent-deep: #f0b0b4;
+    --color-flag-sub: #d1ad66;
+    --color-flag-missing: #ec9a5f;
+    --color-scrim: rgb(0 0 0 / 0.6);
+  }
 }
 
-html[data-app-theme="cyan"],
-html[data-app-theme="cyan"] [data-theme] {
-  --color-primary: #00f2ff !important;
-  --color-primary-content: #000000 !important;
-  --color-secondary: #6366f1 !important;
-  --color-secondary-content: #ffffff !important;
-  --color-accent: #a000ff !important;
-  --primary-shadow-rgb: 0, 242, 255;
-  --secondary-shadow-rgb: 99, 102, 241;
+html[data-scheme="dark"] {
+  color-scheme: dark;
+  --color-paper: #171412;
+  --color-paper-raised: #1f1b18;
+  /* Lighter than paper, not darker: at night a pressed or hovered surface
+     rises out of the dark rather than sinking into it. */
+  --color-paper-sunk: #29241f;
+  --color-ink: #ece4d6;
+  --color-ink-muted: #b4a999;
+  --color-ink-faint: #857b6c;
+  --color-rule: #2f2924;
+  --color-rule-strong: #4a423a;
+  /* Oxblood lifted toward rose so it holds 5.8:1 on the dark paper, and kept
+     clear of the orange "missing" flag beside it. */
+  --color-accent: #cc7a80;
+  --color-accent-soft: #3a2326;
+  --color-accent-deep: #f0b0b4;
+  --color-flag-sub: #d1ad66;
+  --color-flag-missing: #ec9a5f;
+  --color-scrim: rgb(0 0 0 / 0.6);
 }
 
-html[data-app-theme="cyberpunk"],
-html[data-app-theme="cyberpunk"] [data-theme] {
-  --color-primary: #ff007f !important;
-  --color-primary-content: #ffffff !important;
-  --color-secondary: #00f2ff !important;
-  --color-secondary-content: #000000 !important;
-  --color-accent: #f59e0b !important;
-  --primary-shadow-rgb: 255, 0, 127;
-  --secondary-shadow-rgb: 0, 242, 255;
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    /* Native controls and scrollbars follow the page, not just the system. */
+    color-scheme: light;
+    /* Standard properties, not ::-webkit-scrollbar. The legacy pseudo-elements
+       force a classic scrollbar that takes 10px of layout even on macOS, so the
+       shelf page changed width the moment its results made it scroll, and again
+       whenever a sheet locked the scroll. These keep the platform's overlay
+       scrollbar where there is one; where scrollbars do take space, the stable
+       gutter holds it whether or not the page overflows, so the header no
+       longer shifts between pages that scroll the document and pages that
+       scroll <main>. */
+    scrollbar-color: var(--color-rule-strong) transparent;
+    scrollbar-gutter: stable;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    font-optical-sizing: auto;
+    background-color: var(--color-paper);
+    color: var(--color-ink);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    font-weight: 400;
+  }
+
+  ::selection {
+    background: var(--color-accent);
+    color: var(--color-paper);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
 }
 
-html[data-app-theme="emerald"],
-html[data-app-theme="emerald"] [data-theme] {
-  --color-primary: #10b981 !important;
-  --color-primary-content: #ffffff !important;
-  --color-secondary: #f59e0b !important;
-  --color-secondary-content: #000000 !important;
-  --color-accent: #3b82f6 !important;
-  --primary-shadow-rgb: 16, 185, 129;
-  --secondary-shadow-rgb: 245, 158, 11;
+/* ── Type ─────────────────────────────────────────────────────────────── */
+
+.display {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-optical-sizing: auto;
+  letter-spacing: -0.015em;
+  line-height: 1.05;
 }
 
-:root {
-  --primary-shadow-rgb: 160, 0, 255;
-  --secondary-shadow-rgb: 0, 242, 255;
+/*
+ * The one place small uppercase type is allowed: section eyebrows. The old UI
+ * put `font-black uppercase tracking-[0.4em]` on nearly every string.
+ */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
 }
 
-.shadow-primary-glow {
-  box-shadow: 0 0 20px rgba(var(--primary-shadow-rgb), 0.3) !important;
+.meta {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-ink-muted);
+  font-variant-numeric: tabular-nums;
 }
 
-.shadow-primary-button {
-  box-shadow: 0 15px 30px rgba(var(--primary-shadow-rgb), 0.2) !important;
+.tabular {
+  font-variant-numeric: tabular-nums;
 }
 
-.shadow-primary-sm {
-  box-shadow: 0 0 8px rgba(var(--primary-shadow-rgb), 0.8) !important;
-}
+/* ── Controls ─────────────────────────────────────────────────────────── */
 
-.shadow-primary-md {
-  box-shadow: 0 0 15px rgba(var(--primary-shadow-rgb), 0.5) !important;
-}
-
-.shadow-primary-lg {
-  box-shadow: 0 0 50px rgba(var(--primary-shadow-rgb), 0.15) !important;
-}
-
-.shadow-secondary-sm {
-  box-shadow: 0 0 15px rgba(var(--secondary-shadow-rgb), 0.6) !important;
-}
-
-body {
-  font-family: var(--font-sans);
-  background-color: var(--color-base-100);
-  color: var(--color-base-content);
-  -webkit-font-smoothing: antialiased;
-}
-
-.glass-ether {
-  background: rgba(255, 255, 255, 0.03);
-  backdrop-filter: blur(40px) saturate(150%);
-  -webkit-backdrop-filter: blur(40px) saturate(150%);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.glass-studio-sidebar {
-  background: rgba(10, 10, 10, 0.4);
-  backdrop-filter: blur(60px);
-  -webkit-backdrop-filter: blur(60px);
-  border-right: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.glow-cyan {
-  box-shadow: 0 0 30px rgba(0, 242, 255, 0.2);
-}
-
-.text-cyan {
-  color: #00f2ff;
-  text-shadow: 0 0 10px rgba(0, 242, 255, 0.4);
-}
-
-.studio-layout {
-  display: block;
-  min-height: 100vh;
-  width: 100vw;
-}
-
-.studio-sidebar {
-  display: none;
-}
-
-.studio-workbench {
+.field {
   width: 100%;
-  position: relative;
-}
-
-.cabinet-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 150;
-  background: rgba(0, 0, 0, 0.75);
-  backdrop-filter: blur(40px);
-  -webkit-backdrop-filter: blur(40px);
-  opacity: 0;
-  pointer-events: none;
-  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-
-.cabinet-overlay.open {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.cabinet-card {
-  width: 1100px;
-  max-width: 100%;
-  height: 85vh;
-  background: rgba(10, 10, 10, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 36px;
-  box-shadow: 0 40px 100px rgba(0, 0, 0, 0.8);
-  transform: translateY(30px) scale(0.96);
-  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-
-.cabinet-overlay.open .cabinet-card {
-  transform: translateY(0) scale(1);
-}
-
-.cinema-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  background: rgba(0, 0, 0, 0.8);
-  backdrop-filter: blur(50px);
-  -webkit-backdrop-filter: blur(50px);
-  opacity: 0;
-  pointer-events: none;
-  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-
-.cinema-modal.open {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.cinema-modal-card {
-  width: 1000px;
-  max-width: 100%;
-  max-height: 85vh;
-  background: rgba(15, 15, 15, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 32px;
-  box-shadow:
-    0 50px 120px rgba(0, 0, 0, 0.9),
-    0 0 60px rgba(160, 0, 255, 0.05);
-  transform: scale(0.95);
-  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-
-.cinema-modal.open .cinema-modal-card {
-  transform: scale(1);
-}
-
-.page-enter {
-  animation: ether-fade-in 0.8s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@keyframes ether-fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes studio-breathe {
-  0%,
-  100% {
-    opacity: 0.4;
-    transform: scale(0.8);
-    box-shadow: 0 0 5px rgba(var(--primary-shadow-rgb), 0.2);
-  }
-
-  50% {
-    opacity: 1;
-    transform: scale(1.1);
-    box-shadow: 0 0 15px rgba(var(--primary-shadow-rgb), 0.6);
-  }
-}
-
-.breathing-light {
-  width: 6px;
-  height: 6px;
-  background: var(--color-primary);
-  border-radius: 50%;
-  animation: studio-breathe 3s ease-in-out infinite;
-}
-
-.input-studio {
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: 12px;
-  height: 48px;
-  padding: 0 20px;
-  color: white;
-  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.input-studio:focus {
-  background: rgba(255, 255, 255, 0.05);
-  border-color: var(--color-primary);
-  outline: none;
-}
-
-.btn-studio {
-  @apply px-6 py-3 rounded-xl font-black uppercase tracking-[0.2em] text-[10px] transition-all;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.btn-studio-primary {
-  background: var(--color-primary);
-  color: var(--color-primary-content);
-  border: none;
-}
-
-.btn-studio-primary:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 10px 30px rgba(var(--primary-shadow-rgb), 0.4);
-}
-
-::-webkit-scrollbar {
-  width: 4px;
-}
-
-::-webkit-scrollbar-track {
+  font: inherit;
+  font-size: 0.9375rem;
+  color: var(--color-ink);
   background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--color-rule-strong);
+  padding: 0.5rem 1.75rem 0.5rem 0;
+  transition: border-color 140ms ease;
 }
 
-::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
+.field::placeholder {
+  color: var(--color-ink-faint);
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+.field:focus {
+  outline: none;
+  border-bottom-color: var(--color-accent);
 }
 
-.card-entrance {
-  animation: card-fade-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
+.field::-webkit-search-cancel-button,
+.field::-webkit-search-decoration {
+  appearance: none;
 }
 
-@keyframes card-fade-up {
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  line-height: 1;
+  padding: 0.6875rem 1.125rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-card);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
+}
+
+.btn-solid {
+  background: var(--color-ink);
+  color: var(--color-paper);
+}
+
+.btn-solid:hover {
+  background: var(--color-accent);
+}
+
+.btn-outline {
+  border-color: var(--color-rule-strong);
+  color: var(--color-ink);
+}
+
+.btn-outline:hover {
+  border-color: var(--color-ink);
+  background: var(--color-paper-raised);
+}
+
+.btn-quiet {
+  color: var(--color-ink-muted);
+}
+
+.btn-quiet:hover {
+  color: var(--color-ink);
+  background: var(--color-paper-sunk);
+}
+
+.btn-danger {
+  color: var(--color-flag-missing);
+}
+
+.btn-danger:hover {
+  background: var(--color-paper-sunk);
+}
+
+/* A few mutually exclusive options in one hairline frame — the strength band,
+   ml / oz, the archive's base spirit. Pressed reads as ink on a sunk ground
+   rather than an accent fill, so it does not compete with the content. */
+.segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-card);
+}
+
+.segmented > button {
+  font-size: 0.8125rem;
+  line-height: 1;
+  padding: 0.5rem 0.6875rem;
+  color: var(--color-ink-muted);
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.segmented > button + button {
+  border-left: 1px solid var(--color-rule);
+}
+
+.segmented > button:hover {
+  color: var(--color-ink);
+}
+
+.segmented > button[aria-pressed="true"] {
+  background: var(--color-paper-sunk);
+  color: var(--color-ink);
+}
+
+/* A pressable label — tags, filters, and the shelf's item list. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  font-size: 0.8125rem;
+  line-height: 1;
+  padding: 0.4375rem 0.625rem;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-card);
+  background: var(--color-paper-raised);
+  color: var(--color-ink-muted);
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
+}
+
+.chip:hover {
+  border-color: var(--color-rule-strong);
+  color: var(--color-ink);
+}
+
+.chip[aria-pressed="true"] {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent);
+  color: var(--color-accent-deep);
+}
+
+/* daisyUI is gone; the checkbox was the only form control that needed it. */
+.check {
+  appearance: none;
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  border: 1px solid var(--color-rule-strong);
+  border-radius: var(--radius-card);
+  background: var(--color-paper-raised);
+  cursor: pointer;
+  position: relative;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.check:checked {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.check:checked::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 1.5px;
+  width: 4px;
+  height: 8px;
+  border: solid var(--color-paper);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+
+/* ── Surfaces ─────────────────────────────────────────────────────────── */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: var(--color-scrim);
+  opacity: 0;
+  pointer-events: none;
+  /* pointer-events only stops the mouse. Without visibility the closed sheet
+     keeps its place in the tab order and the accessibility tree, so a keyboard
+     reader on the shelf page falls into an invisible dialog. The delay holds it
+     visible for the length of the fade. */
+  visibility: hidden;
+  transition:
+    opacity 180ms ease,
+    visibility 0s linear 180ms;
+}
+
+.overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+  transition:
+    opacity 180ms ease,
+    visibility 0s;
+}
+
+.sheet {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  width: 100%;
+  background: var(--color-paper);
+  border: 1px solid var(--color-rule-strong);
+  border-radius: var(--radius-card);
+  box-shadow: 0 24px 60px -24px rgb(27 23 20 / 0.4);
+  transform: translateY(8px);
+  transition: transform 180ms ease;
+}
+
+.overlay.open .sheet {
+  transform: none;
+}
+
+/* ── Motion ───────────────────────────────────────────────────────────── */
+
+.fade-in {
+  animation: fade-in 200ms ease both;
+}
+
+@keyframes fade-in {
   from {
     opacity: 0;
-    transform: translateY(30px);
-    filter: blur(10px);
+    transform: translateY(4px);
   }
 
   to {
     opacity: 1;
-    transform: translateY(0);
-    filter: blur(0);
+    transform: none;
+  }
+}
+
+/* An indeterminate hairline, shown while a request is in flight. */
+.progress-rule {
+  position: relative;
+  overflow: hidden;
+  height: 1px;
+  background: var(--color-rule);
+}
+
+.progress-rule::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 30%;
+  background: var(--color-accent);
+  animation: progress-sweep 1.1s ease-in-out infinite;
+}
+
+@keyframes progress-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+
+  to {
+    transform: translateX(400%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

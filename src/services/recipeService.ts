@@ -26,6 +26,31 @@ export interface RecipePage {
   total: number;
 }
 
+/**
+ * The server caps `by-ids` at 100 so a single request cannot ask for the whole
+ * archive. A long-standing collection passes that, so the client splits its own
+ * request rather than letting the saved page fail with "too many ids requested".
+ */
+export const BY_IDS_BATCH_SIZE = 100;
+
+/**
+ * How a recipe is named in a URL: its translation key without the "recipe."
+ * prefix, underscores written as hyphens — `recipe.whiskey_sour` becomes
+ * `whiskey-sour`. Ids differ between databases seeded separately, so a link
+ * built from one would not open on another; the key is the same everywhere.
+ * The server reverses this in `recipeKeyFromSlug`.
+ */
+export function recipeSlug(recipe: { id: string; translation_key?: string }): string {
+  const key = recipe.translation_key?.replace(/^recipe\./, "");
+  return key ? key.replaceAll("_", "-") : recipe.id;
+}
+
+export function chunk<T>(items: T[], size: number): T[][] {
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += size) batches.push(items.slice(i, i + size));
+  return batches;
+}
+
 export const recipeService = {
   getIngredients(signal?: AbortSignal): Promise<Ingredient[]> {
     return get<Ingredient[]>("/ingredients", signal);
@@ -36,7 +61,22 @@ export const recipeService = {
   },
 
   getRecipes(
-    params: { page?: number; limit?: number; sort?: "asc" | "desc"; search?: string } = {},
+    params: {
+      page?: number;
+      limit?: number;
+      sort?: "asc" | "desc";
+      search?: string;
+      /**
+       * Translation keys whose localised text matched the search. The server
+       * holds only English title and description, so without these a reader
+       * searching in Chinese matches nothing.
+       */
+      keys?: string[];
+      /** Palate and style tags, filtered as the server's tagFilter describes. */
+      tagIds?: string[];
+      /** A base spirit, e.g. "Brandy": recipes calling for any bottle with that base. */
+      base?: string;
+    } = {},
     signal?: AbortSignal,
   ): Promise<RecipePage> {
     const query = new URLSearchParams({
@@ -44,27 +84,44 @@ export const recipeService = {
       limit: String(params.limit ?? 12),
       sort: params.sort ?? "desc",
     });
-    if (params.search) query.append("search", params.search);
+    if (params.search) {
+      query.append("search", params.search);
+      if (params.keys?.length) query.append("keys", params.keys.join(","));
+    }
+    if (params.tagIds?.length) query.append("tags", params.tagIds.join(","));
+    if (params.base) query.append("base", params.base);
     return get<RecipePage>(`/recipes?${query}`, signal);
   },
 
   // Used by the saved page so it fetches only the favourited recipes rather
   // than downloading the whole archive and filtering in the browser.
-  getRecipesByIds(ids: string[], signal?: AbortSignal): Promise<RecipePage> {
-    if (ids.length === 0) return Promise.resolve({ items: [], total: 0 });
-    const query = new URLSearchParams({ ids: ids.join(",") });
-    return get<RecipePage>(`/recipes/by-ids?${query}`, signal);
+  async getRecipesByIds(ids: string[], signal?: AbortSignal): Promise<RecipePage> {
+    if (ids.length === 0) return { items: [], total: 0 };
+
+    const pages = await Promise.all(
+      chunk(ids, BY_IDS_BATCH_SIZE).map((batch) =>
+        get<RecipePage>(`/recipes/by-ids?${new URLSearchParams({ ids: batch.join(",") })}`, signal),
+      ),
+    );
+
+    const items = pages.flatMap((page) => page.items ?? []);
+    return { items, total: items.length };
   },
 
-  getRecipe(id: string, signal?: AbortSignal): Promise<Recipe> {
-    return get<Recipe>(`/recipes/${id}`, signal);
+  /** Accepts an id or a `recipeSlug`. */
+  getRecipe(ref: string, signal?: AbortSignal): Promise<Recipe> {
+    return get<Recipe>(`/recipes/${encodeURIComponent(ref)}`, signal);
   },
 
   matchCocktails(
     params: {
       ownedIngredientIds: string[];
       minStrength?: number;
+      maxStrength?: number;
+      /** Palate filters: keep recipes carrying any of these. */
       tagIds?: string[];
+      /** Tools the user does not have: drop recipes carrying any of these. */
+      excludeTagIds?: string[];
       allowSubstitutes?: boolean;
     },
     signal?: AbortSignal,
@@ -75,7 +132,9 @@ export const recipeService = {
       body: JSON.stringify({
         owned_ingredient_ids: params.ownedIngredientIds,
         min_strength: params.minStrength ?? 0,
+        max_strength: params.maxStrength ?? 0,
         tag_ids: params.tagIds ?? [],
+        exclude_tag_ids: params.excludeTagIds ?? [],
         allow_substitutes: params.allowSubstitutes ?? false,
       }),
       signal,

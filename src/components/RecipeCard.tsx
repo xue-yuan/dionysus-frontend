@@ -2,117 +2,123 @@ import type { Component } from "solid-js";
 import { Show } from "solid-js";
 import type { Recipe, RecipeMatchResult } from "../types";
 import { useI18n } from "../i18n";
+import { findIngredient } from "../data/catalog";
+import { Icon, TickMeter } from "./Icon";
+import { Glass } from "./Glass";
+import { useRecipeSheet } from "./RecipeDetailModal";
 
 interface RecipeCardProps {
   recipe: Recipe | RecipeMatchResult;
-  onViewDetails: () => void;
-  missingIngredientName?: string;
-  substituteCount?: number;
+  /**
+   * How the recipe stands against the shelf. Home passes its own match rows;
+   * the archive and saved pages look each card up in `shelfMatches`. Absent
+   * means two or more ingredients away, or an empty shelf.
+   */
+  match?: RecipeMatchResult;
+  /** Home's section heading already says "ready", so the card need not. */
+  hideReady?: boolean;
 }
 
+/**
+ * A plate in a book: image, hairline, caption. Everything the old card revealed
+ * on hover now lives in the caption or the detail sheet — a card that rearranges
+ * itself under the cursor is hard to scan and impossible to use on touch.
+ *
+ * Recipes without a photograph drop the plate entirely and set the title larger
+ * instead. The archive currently ships no images at all, and a grid of 110
+ * identical placeholder monograms is worse than no picture: it fills two thirds
+ * of every card with nothing.
+ */
 export const RecipeCard: Component<RecipeCardProps> = (props) => {
-  const { t, tName } = useI18n();
+  const { t, tCount, tName, tMethod, tGlassware } = useI18n();
+  const sheet = useRecipeSheet();
   const title = () => tName(props.recipe);
+  const hasImage = () => Boolean(props.recipe.image_url);
 
+  const ready = () => props.match?.missing_count === 0 && !props.hideReady;
+  const missingName = () => {
+    if (props.match?.missing_count !== 1) return undefined;
+    const ingredient = findIngredient(props.match.missing_ingredients?.[0]);
+    return ingredient ? tName(ingredient) : undefined;
+  };
+  const substituteCount = () => props.match?.substitutions?.length ?? 0;
+
+  // A real link, so a recipe can be opened in a new tab or copied.
   return (
-    <button
-      type="button"
+    <a
+      href={sheet.href(props.recipe)}
       aria-label={title()}
-      class="group relative w-full text-left aspect-[1.4] glass-ether rounded-3xl border-white/5 overflow-hidden cursor-pointer transition-all duration-700 hover:border-primary/50 hover:shadow-primary-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-      onClick={props.onViewDetails}
+      onClick={sheet.follow(props.recipe)}
+      class="group w-full h-full text-left flex flex-col bg-paper-raised border border-rule rounded-card overflow-hidden cursor-pointer transition-colors hover:border-ink"
     >
-      <Show
-        when={props.recipe.image_url}
-        fallback={
-          <div class="absolute inset-0 flex items-center justify-center text-8xl opacity-5 grayscale font-black italic">
-            D.
-          </div>
-        }
-      >
-        <img
-          src={props.recipe.image_url}
-          alt=""
-          loading="lazy"
-          class="absolute inset-0 w-full h-full object-cover opacity-60 mix-blend-luminosity group-hover:scale-110 group-hover:opacity-80 transition-all duration-1000 ease-out"
-        />
+      <Show when={hasImage()}>
+        <div class="aspect-[4/5] overflow-hidden bg-paper-sunk border-b border-rule">
+          <img
+            src={props.recipe.image_url}
+            alt=""
+            loading="lazy"
+            class="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.03]"
+          />
+        </div>
       </Show>
 
-      <div class="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent opacity-90 transition-opacity duration-700 group-hover:via-black/40" />
+      <div class="flex-1 flex flex-col p-5" classList={{ "min-h-[11rem]": !hasImage() }}>
+        <div class="flex items-start justify-between gap-3">
+          <span class="eyebrow truncate">{tMethod(props.recipe.method)}</span>
+          <Glass
+            glassware={props.recipe.glassware}
+            class="h-9 w-auto shrink-0 -mt-1 -mr-1 text-ink-faint transition-colors group-hover:text-ink-muted"
+          />
+        </div>
 
-      <div class="absolute inset-0 p-6 pointer-events-none">
-        <div class="absolute inset-x-6 top-6 flex justify-between items-start transition-all duration-500 group-hover:opacity-0 group-hover:-translate-y-2">
-          <span class="px-3 py-1 rounded-xl bg-black/60 backdrop-blur-md border border-white/10 text-xs font-black uppercase tracking-widest text-cyan">
-            {props.recipe.method}
-          </span>
-          <Show when={props.missingIngredientName}>
-            <div
-              class="w-6 h-6 flex items-center justify-center bg-red-500/80 rounded-full text-white font-black text-xs animate-pulse shadow-[0_0_20px_rgba(239,68,68,0.4)]"
-              aria-hidden="true"
-            >
-              !
-            </div>
+        <h3
+          class="display mt-1 leading-[1.1] decoration-1 underline-offset-4 group-hover:underline"
+          classList={{
+            "text-[1.3125rem]": hasImage(),
+            "text-[1.625rem]": !hasImage(),
+          }}
+        >
+          {title()}
+        </h3>
+
+        <div class="mt-auto pt-4">
+          <p class="meta truncate">
+            {tGlassware(props.recipe.glassware)}
+            <span class="text-rule-strong"> · </span>
+            {tCount("card.ingredients", props.recipe.total_ingredients || 0)}
+          </p>
+
+          {/* Labelled, because an unlabelled row of ticks reads as decoration. */}
+          <p class="meta mt-1.5 flex items-center gap-2">
+            {t("card.strength")}
+            <TickMeter
+              value={props.recipe.strength}
+              label={`${t("card.strength")} ${props.recipe.strength}/5`}
+            />
+          </p>
+
+          <Show when={ready()}>
+            <p class="mt-2 text-[13px] text-ink flex items-center gap-1.5">
+              <Icon name="check" size={13} />
+              {t("card.ready")}
+            </p>
+          </Show>
+
+          <Show when={missingName()}>
+            {(name) => (
+              <p class="mt-2 text-[13px] text-flag-missing">
+                {t("card.missing", { name: name() })}
+              </p>
+            )}
+          </Show>
+
+          <Show when={substituteCount() > 0}>
+            <p class="mt-1.5 text-[13px] text-flag-sub">
+              {t("card.substitutes", { count: substituteCount() })}
+            </p>
           </Show>
         </div>
-
-        <div class="absolute bottom-6 left-6 right-6">
-          <div class="space-y-3">
-            <div class="space-y-1">
-              <h3 class="text-2xl font-black text-white tracking-tightest leading-none uppercase group-hover:text-primary transition-colors duration-500">
-                {title()}
-              </h3>
-              <div class="flex items-center gap-2.5">
-                <span class="text-xs font-black text-white/40 uppercase tracking-[0.3em]">
-                  {props.recipe.glassware}
-                </span>
-                <div class="h-px w-6 bg-white/10" />
-                <span class="text-xs font-black text-white/30 uppercase tracking-[0.3em]">
-                  {t("recipeCard.itemCount", { count: props.recipe.total_ingredients || 0 })}
-                </span>
-              </div>
-            </div>
-
-            <div class="max-h-0 group-hover:max-h-40 overflow-hidden transition-all duration-700 ease-out">
-              <div class="grid grid-cols-3 gap-4 pt-4 border-t border-white/5 opacity-0 group-hover:opacity-100 transition-opacity duration-500 delay-100">
-                <div class="space-y-0.5">
-                  <p class="text-[11px] font-black uppercase tracking-widest text-white/20">
-                    {t("recipeCard.sweet")}
-                  </p>
-                  <p class="text-lg font-black text-white">{props.recipe.sweetness}</p>
-                </div>
-                <div class="space-y-0.5">
-                  <p class="text-[11px] font-black uppercase tracking-widest text-white/20">
-                    {t("recipeCard.sour")}
-                  </p>
-                  <p class="text-lg font-black text-white">{props.recipe.sourness}</p>
-                </div>
-                <div class="space-y-0.5">
-                  <p class="text-[11px] font-black uppercase tracking-widest text-white/20">
-                    {t("recipeCard.booze")}
-                  </p>
-                  <p class="text-lg font-black text-white">{props.recipe.strength}</p>
-                </div>
-              </div>
-
-              <Show when={props.missingIngredientName}>
-                <div class="text-xs font-black uppercase tracking-widest text-red-400 mt-4">
-                  {t("recipeCard.missingPrefix")}
-                  {props.missingIngredientName}
-                </div>
-              </Show>
-
-              <Show when={props.substituteCount}>
-                {(count) => (
-                  <div class="text-xs font-black uppercase tracking-widest text-orange-400 mt-2">
-                    {t("recipeCard.usingSubstitutes", { count: count() })}
-                  </div>
-                )}
-              </Show>
-            </div>
-          </div>
-        </div>
       </div>
-
-      <div class="absolute inset-0 pointer-events-none border-2 border-transparent group-hover:border-primary/20 rounded-3xl transition-all duration-700" />
-    </button>
+    </a>
   );
 };

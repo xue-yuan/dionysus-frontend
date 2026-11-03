@@ -1,53 +1,53 @@
 import type { Component } from "solid-js";
 import { For, Show, createEffect, createSignal, createMemo, onCleanup } from "solid-js";
+import { useSearchParams } from "@solidjs/router";
 import { recipeService } from "../services/recipeService";
-import type { Ingredient, RecipeMatchResult, Tag } from "../types";
+import type { RecipeMatchResult } from "../types";
 import { RecipeCard } from "../components/RecipeCard";
-import { RecipeDetailModal } from "../components/RecipeDetailModal";
-import { Layout, SiteFooter } from "../components/Layout";
+import { RecipeDetailModal, useRecipeSheet } from "../components/RecipeDetailModal";
+import { ShelfEditor } from "../components/ShelfEditor";
+import { Layout, Page, SiteFooter } from "../components/Layout";
+import { Masthead, SectionHead, Notice, CardGrid } from "../components/Editorial";
+import { Icon } from "../components/Icon";
 import { userStore } from "../stores/userStore";
-import { inventoryStore } from "../stores/inventoryStore";
-import { ingredientList, tagList, findIngredient, findTag } from "../data/catalog";
+import { inventoryStore, STRENGTH_BANDS, type StrengthBand } from "../stores/inventoryStore";
+import { findIngredient, findTag, ingredientList } from "../data/catalog";
 import { QUICK_KITS } from "../data/quickKits";
+import { nextBuys } from "../data/nextBuys";
+import { SHELF_PARAM, decodeShelf, encodeShelf } from "../data/shelfLink";
 import { useI18n } from "../i18n";
 
-const CABINET_CATEGORIES = [
-  { key: "Spirit", labelKey: "ingredient.category.spirit" },
-  { key: "Liqueur", labelKey: "ingredient.category.liqueur" },
-  { key: "Syrup", labelKey: "ingredient.category.syrup" },
-  { key: "Mixer", labelKey: "ingredient.category.mixer" },
-  { key: "Bitters", labelKey: "ingredient.category.bitters" },
-  { key: "Garnish", labelKey: "ingredient.category.garnish" },
-  { key: "Palate", labelKey: "tag.type.palate" },
-  { key: "Equipment", labelKey: "tag.type.equipment" },
-] as const;
-
-const isTagCategory = (key: string) => key === "Palate" || key === "Equipment";
+const BANDS = Object.keys(STRENGTH_BANDS) as StrengthBand[];
 
 const Home: Component = () => {
-  const { t, tName, tCategory, tTagType } = useI18n();
+  const { t, tCount, tName, tCategory, tDynamic } = useI18n();
+  const sheet = useRecipeSheet();
+  const [params, setParams] = useSearchParams();
 
   const [matches, setMatches] = createSignal<RecipeMatchResult[]>([]);
   const [loading, setLoading] = createSignal(false);
-  const [selectedRecipe, setSelectedRecipe] = createSignal<RecipeMatchResult | null>(null);
-
-  const [isCabinetOpen, setIsCabinetOpen] = createSignal(false);
-  const [cabinetCategory, setCabinetCategory] = createSignal<string>("Spirit");
-  const [cabinetSearch, setCabinetSearch] = createSignal("");
+  const [error, setError] = createSignal<string | null>(null);
+  const [isShelfOpen, setIsShelfOpen] = createSignal(false);
 
   // A new request supersedes the one in flight, so the last keystroke wins.
   let inFlight: AbortController | null = null;
+  // Bumped by the retry button; read inside the effect so it re-runs the match
+  // without the shelf having to change.
+  const [retryToken, setRetryToken] = createSignal(0);
 
   createEffect(() => {
     const owned = inventoryStore.ownedIngredients;
-    const minStrength = inventoryStore.minStrength;
+    const [minStrength, maxStrength] = STRENGTH_BANDS[inventoryStore.strength];
     const tagIds = inventoryStore.selectedTags;
+    const excludeTagIds = inventoryStore.missingTools;
     const allowSubstitutes = inventoryStore.allowSubstitutes;
+    retryToken();
 
     if (owned.length === 0) {
       inFlight?.abort();
       inFlight = null;
       setMatches([]);
+      setError(null);
       setLoading(false);
       return;
     }
@@ -60,14 +60,25 @@ const Home: Component = () => {
 
       try {
         const results = await recipeService.matchCocktails(
-          { ownedIngredientIds: owned, minStrength, tagIds, allowSubstitutes },
+          {
+            ownedIngredientIds: owned,
+            minStrength,
+            maxStrength,
+            tagIds,
+            excludeTagIds,
+            allowSubstitutes,
+          },
           controller.signal,
         );
         setMatches(results ?? []);
+        setError(null);
       } catch (err) {
+        // Without this the failure renders as "nothing matched", which reads as
+        // a fact about the shelf rather than a broken request.
         if ((err as Error).name !== "AbortError") {
           console.error("match failed", err);
           setMatches([]);
+          setError((err as Error).message);
         }
       } finally {
         if (inFlight === controller) {
@@ -101,519 +112,482 @@ const Home: Component = () => {
   const exactMatches = bySection(0);
   const nearMisses = bySection(1);
 
+  // Ranked from the unsorted list, so flipping the strength sort does not
+  // reshuffle it.
+  const buys = createMemo(() => nextBuys(visibleMatches()));
+
+  const shelfIsEmpty = () => inventoryStore.ownedIngredients.length === 0;
+  const nothingMatched = () =>
+    !shelfIsEmpty() &&
+    !loading() &&
+    !error() &&
+    exactMatches().length === 0 &&
+    nearMisses().length === 0;
+
+  const headline = () => {
+    if (shelfIsEmpty()) return t("home.title.empty");
+    const count = exactMatches().length;
+    if (count === 0) return t("home.title.none");
+    if (count === 1) return t("home.title.one");
+    return t("home.title.results", { count });
+  };
+
+  const filterCount = () => inventoryStore.selectedTags.length + inventoryStore.missingTools.length;
+
+  const summary = () => {
+    const parts: (string | undefined)[] = [
+      tCount("home.summary.bottles", inventoryStore.ownedIngredients.length),
+    ];
+    if (filterCount() > 0) {
+      parts.push(tCount("home.summary.filters", filterCount()));
+    }
+    parts.push(
+      inventoryStore.allowSubstitutes
+        ? t("home.summary.substitutesOn")
+        : t("home.summary.substitutesOff"),
+    );
+    return parts.filter(Boolean).join(" · ");
+  };
+
   const handleLucky = () => {
     const pool = exactMatches().length > 0 ? exactMatches() : nearMisses();
     if (pool.length > 0) {
-      setSelectedRecipe(pool[Math.floor(Math.random() * pool.length)]);
+      sheet.open(pool[Math.floor(Math.random() * pool.length)]);
     }
   };
 
-  const addKit = (names: string[]) => {
+  const kitIngredients = (names: string[]) => {
     const catalogue = ingredientList();
-    const ids: string[] = [];
-    for (const name of names) {
+    return names.flatMap((name) => {
       const match = catalogue.find((i) => i.name === name);
-      if (match) ids.push(match.id);
-      else console.warn(`quick kit references unknown ingredient: ${name}`);
+      // Only once the catalogue is in; before that every name is "unknown".
+      if (!match && catalogue.length > 0) {
+        console.warn(`quick kit references unknown ingredient: ${name}`);
+      }
+      return match ? [match] : [];
+    });
+  };
+
+  const addKit = (names: string[]) =>
+    inventoryStore.addIngredients(kitIngredients(names).map((i) => i.id));
+
+  /**
+   * A shelf someone shared. Nothing is applied until the reader chooses to —
+   * opening a link should never silently replace what they have built up.
+   */
+  const sharedShelf = createMemo(() => {
+    const value = params[SHELF_PARAM];
+    if (typeof value !== "string" || !value) return undefined;
+    const ids = decodeShelf(value, ingredientList());
+    return ids.length > 0 ? ids : undefined;
+  });
+
+  const settleShared = (apply?: (ids: string[]) => void) => {
+    const ids = sharedShelf();
+    if (ids && apply) apply(ids);
+    setParams({ [SHELF_PARAM]: undefined }, { replace: true, scroll: false });
+  };
+
+  const [shareState, setShareState] = createSignal<"idle" | "copied" | "failed">("idle");
+  const shareLink = () =>
+    `${location.origin}/?${SHELF_PARAM}=${encodeShelf(inventoryStore.ownedIngredients, ingredientList())}`;
+
+  const copyShareLink = async () => {
+    try {
+      await navigator.clipboard.writeText(shareLink());
+      setShareState("copied");
+    } catch {
+      // No clipboard (an insecure origin, a refused permission): show the link
+      // so it can be copied by hand.
+      setShareState("failed");
     }
-    inventoryStore.addIngredients(ids);
+    setTimeout(() => setShareState((s) => (s === "copied" ? "idle" : s)), 2000);
   };
-
-  const cabinetItems = createMemo<(Ingredient | Tag)[]>(() => {
-    const category = cabinetCategory();
-    const query = cabinetSearch().toLowerCase().trim();
-    const source: (Ingredient | Tag)[] = isTagCategory(category)
-      ? tagList().filter((tag) => tag.type === category)
-      : ingredientList().filter((ing) => ing.category === category);
-
-    if (!query) return source;
-    return source.filter((item) => item.name.toLowerCase().includes(query));
-  });
-
-  const isSelected = (id: string) =>
-    isTagCategory(cabinetCategory()) ? inventoryStore.hasTag(id) : inventoryStore.owns(id);
-
-  const toggleCabinetItem = (id: string) =>
-    isTagCategory(cabinetCategory())
-      ? inventoryStore.toggleTag(id)
-      : inventoryStore.toggleIngredient(id);
-
-  const missingNameFor = (recipe: RecipeMatchResult) => {
-    const id = recipe.missing_ingredients?.[0];
-    const ingredient = findIngredient(id);
-    return ingredient ? tName(ingredient) : undefined;
-  };
-
-  createEffect(() => {
-    if (!isCabinetOpen()) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setIsCabinetOpen(false);
-    };
-    document.addEventListener("keydown", onKeyDown);
-    onCleanup(() => document.removeEventListener("keydown", onKeyDown));
-  });
 
   return (
     <Layout>
-      <RecipeDetailModal recipe={selectedRecipe()} onClose={() => setSelectedRecipe(null)} />
+      <RecipeDetailModal rows={matches()} />
+      <ShelfEditor open={isShelfOpen()} onClose={() => setIsShelfOpen(false)} />
 
-      <div
-        class={`cabinet-overlay ${isCabinetOpen() ? "open" : ""}`}
-        onClick={() => setIsCabinetOpen(false)}
-      >
-        <div
-          class="cabinet-card p-10 gap-8"
-          role="dialog"
-          aria-modal="true"
-          aria-label={t("home.cabinet.title") ?? undefined}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div class="flex items-center justify-between border-b border-white/5 pb-6">
-            <div>
-              <h2 class="text-3xl font-black text-white tracking-wide uppercase">
-                {t("home.cabinet.title")}
-              </h2>
-              <p class="text-xs uppercase tracking-widest text-white/30 mt-1">
-                {t("home.cabinet.subtitle")}
-              </p>
-            </div>
-            <button
-              type="button"
-              aria-label={t("recipePanel.close") ?? "Close"}
-              onClick={() => setIsCabinetOpen(false)}
-              class="w-12 h-12 rounded-xl bg-white/5 hover:bg-white/10 flex items-center justify-center border border-white/5 text-white/60 hover:text-white transition-colors"
+      <Page>
+        <Show when={sharedShelf()}>
+          {(ids) => (
+            <section
+              class="mt-8 border border-rule-strong bg-paper-raised px-5 py-4 flex flex-wrap items-center justify-between gap-x-8 gap-y-4"
+              aria-label={t("home.shared.title") ?? undefined}
             >
-              ✕
-            </button>
-          </div>
-
-          <div class="flex-grow flex gap-10 overflow-hidden min-h-0">
-            <div class="w-72 flex flex-col gap-2 overflow-y-auto pr-4 border-r border-white/5">
-              <For each={CABINET_CATEGORIES}>
-                {(category) => (
+              <div class="min-w-0 flex-1">
+                <p>
+                  <span class="display text-[1.25rem]">{t("home.shared.title")}</span>
+                  <span class="meta ml-2.5">{tCount("home.summary.bottles", ids().length)}</span>
+                </p>
+                <p class="mt-1 text-[14px] text-ink-muted line-clamp-2">
+                  {ids()
+                    .map((id) => tName(findIngredient(id)))
+                    .join(" · ")}
+                </p>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  class="btn btn-solid"
+                  onClick={() => settleShared((ids) => inventoryStore.replaceIngredients(ids))}
+                >
+                  {t("home.shared.use")}
+                </button>
+                <Show when={!shelfIsEmpty()}>
                   <button
                     type="button"
-                    onClick={() => {
-                      setCabinetCategory(category.key);
-                      setCabinetSearch("");
-                    }}
-                    aria-pressed={cabinetCategory() === category.key}
-                    class={`w-full text-left px-6 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all border ${
-                      cabinetCategory() === category.key
-                        ? "bg-primary text-black border-primary shadow-primary-button"
-                        : "bg-white/[0.01] border-white/5 text-white/40 hover:text-white hover:bg-white/5"
-                    }`}
+                    class="btn btn-outline"
+                    onClick={() => settleShared((ids) => inventoryStore.addIngredients(ids))}
                   >
-                    {isTagCategory(category.key) ? tTagType(category.key) : tCategory(category.key)}
+                    {t("home.shared.merge")}
+                  </button>
+                </Show>
+                <button type="button" class="btn btn-quiet" onClick={() => settleShared()}>
+                  {t("home.shared.dismiss")}
+                </button>
+              </div>
+            </section>
+          )}
+        </Show>
+
+        <Masthead
+          eyebrow={t("home.eyebrow")}
+          title={headline()}
+          meta={
+            <div class="flex flex-wrap items-baseline gap-x-3 gap-y-2">
+              <p class="meta">{summary()}</p>
+              <Show when={!shelfIsEmpty()}>
+                <span class="text-rule-strong" aria-hidden="true">
+                  ·
+                </span>
+                <button
+                  type="button"
+                  class="meta text-ink underline underline-offset-4 decoration-1 hover:text-accent"
+                  onClick={copyShareLink}
+                >
+                  {shareState() === "copied" ? t("home.share.copied") : t("home.share.action")}
+                </button>
+              </Show>
+              <Show when={shareState() === "failed"}>
+                <input
+                  readonly
+                  class="field font-mono text-[12px] basis-full"
+                  aria-label={t("home.share.manual") ?? undefined}
+                  value={shareLink()}
+                  onFocus={(e) => e.currentTarget.select()}
+                />
+              </Show>
+            </div>
+          }
+        />
+
+        <div class="border-y border-rule py-4 flex flex-wrap items-center gap-x-8 gap-y-4">
+          <button type="button" class="btn btn-solid" onClick={() => setIsShelfOpen(true)}>
+            <Icon name="plus" size={14} />
+            {t("home.controls.editShelf")}
+          </button>
+
+          <div class="flex items-center gap-3">
+            <span id="strength-label" class="text-[14px] text-ink-muted whitespace-nowrap">
+              {t("home.controls.strength")}
+            </span>
+            <div class="segmented" role="group" aria-labelledby="strength-label">
+              <For each={BANDS}>
+                {(band) => (
+                  <button
+                    type="button"
+                    aria-pressed={inventoryStore.strength === band}
+                    onClick={() => inventoryStore.setStrength(band)}
+                  >
+                    {t(`home.strength.${band}`)}
                   </button>
                 )}
               </For>
             </div>
-
-            <div class="flex-1 flex flex-col gap-6 overflow-hidden">
-              <div class="relative">
-                <input
-                  type="search"
-                  aria-label={t("home.cabinet.searchPlaceholder") ?? undefined}
-                  placeholder={t("home.cabinet.searchPlaceholder")}
-                  class="input-studio w-full pr-10"
-                  value={cabinetSearch()}
-                  onInput={(e) => setCabinetSearch(e.currentTarget.value)}
-                />
-                <Show when={cabinetSearch()}>
-                  <button
-                    type="button"
-                    aria-label={t("home.inventory.clearSearch") ?? "Clear"}
-                    onClick={() => setCabinetSearch("")}
-                    class="absolute right-3 top-1/2 -translate-y-1/2 text-white/20 hover:text-white"
-                  >
-                    ✕
-                  </button>
-                </Show>
-              </div>
-
-              <div class="flex-1 overflow-y-auto pr-2 custom-scrollbar">
-                <div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                  <For each={cabinetItems()}>
-                    {(item) => {
-                      const selected = () => isSelected(item.id);
-                      const isTag = "type" in item;
-                      return (
-                        <button
-                          type="button"
-                          onClick={() => toggleCabinetItem(item.id)}
-                          aria-pressed={selected()}
-                          class={`px-6 py-5 rounded-2xl border transition-all text-xs font-black uppercase tracking-widest text-left relative overflow-hidden flex flex-col justify-between h-28 group ${
-                            selected()
-                              ? "bg-primary/10 border-primary text-primary shadow-primary-glow"
-                              : "bg-white/[0.02] border-white/5 text-white/60 hover:border-white/20 hover:bg-white/5"
-                          }`}
-                        >
-                          <span class="text-[11px] opacity-40">
-                            {isTag
-                              ? tTagType((item as Tag).type)
-                              : tCategory((item as Ingredient).category)}
-                          </span>
-                          <span class="text-sm font-bold text-white group-hover:text-primary transition-colors pr-4 leading-snug">
-                            {tName(item)}
-                          </span>
-                          <Show when={selected()}>
-                            <div class="absolute top-3 right-3 w-2 h-2 rounded-full bg-primary animate-pulse shadow-primary-sm" />
-                          </Show>
-                        </button>
-                      );
-                    }}
-                  </For>
-                </div>
-              </div>
-            </div>
           </div>
 
-          <div class="flex items-center justify-between border-t border-white/5 pt-6 bg-transparent">
-            <div class="flex items-center gap-4 flex-wrap max-w-[70%]">
-              <span class="text-xs font-black uppercase tracking-widest text-white/30">
-                {t("home.cabinet.currentlyStocked")}
-              </span>
-              <div class="flex flex-wrap gap-2 max-h-[60px] overflow-y-auto pr-2 custom-scrollbar">
-                <For each={inventoryStore.ownedIngredients}>
-                  {(id) => {
-                    const ingredient = () => findIngredient(id);
-                    return (
-                      <Show when={ingredient()}>
-                        {(ing) => (
-                          <button
-                            type="button"
-                            onClick={() => inventoryStore.toggleIngredient(id)}
-                            class="px-3 py-1 rounded-xl bg-white/5 border border-white/10 hover:border-red-500/50 hover:bg-red-500/10 hover:text-red-500 text-xs font-bold text-white/70 uppercase tracking-widest transition-all"
-                          >
-                            {tName(ing())} ✕
-                          </button>
-                        )}
-                      </Show>
-                    );
-                  }}
-                </For>
-              </div>
-            </div>
-            <div class="flex items-center gap-4">
-              <Show
-                when={
-                  inventoryStore.ownedIngredients.length > 0 ||
-                  inventoryStore.selectedTags.length > 0
-                }
-              >
-                <button
-                  type="button"
-                  onClick={() => inventoryStore.clear()}
-                  class="px-6 py-3 border border-red-500/20 hover:border-red-500 hover:bg-red-500/10 rounded-xl text-xs font-black uppercase tracking-widest text-red-500 transition-all"
-                >
-                  [{" "}
-                  {t("home.inventory.clear", {
-                    count:
-                      inventoryStore.ownedIngredients.length + inventoryStore.selectedTags.length,
-                  })}{" "}
-                  ]
-                </button>
-              </Show>
-              <button
-                type="button"
-                onClick={() => setIsCabinetOpen(false)}
-                class="px-8 py-3.5 bg-primary text-black font-black uppercase tracking-widest text-xs rounded-xl hover:scale-[1.02] active:scale-[0.98] transition-all"
-              >
-                {t("home.cabinet.confirm")}
-              </button>
-            </div>
+          <label class="flex items-center gap-2.5 text-[14px] text-ink-muted cursor-pointer hover:text-ink transition-colors">
+            <input
+              type="checkbox"
+              class="check"
+              checked={inventoryStore.allowSubstitutes}
+              onChange={(e) => inventoryStore.setAllowSubstitutes(e.currentTarget.checked)}
+            />
+            {t("home.controls.substitutes")}
+          </label>
+
+          <label class="flex items-center gap-2.5 text-[14px] text-ink-muted cursor-pointer hover:text-ink transition-colors">
+            <input
+              type="checkbox"
+              class="check"
+              checked={inventoryStore.showFavorites}
+              onChange={() => inventoryStore.toggleShowFavorites()}
+            />
+            {t("home.controls.savedOnly")}
+          </label>
+
+          <div class="flex items-center gap-1 ml-auto">
+            <button
+              type="button"
+              class="btn btn-quiet"
+              aria-label={t("home.controls.sortToggle") ?? undefined}
+              onClick={() => inventoryStore.toggleSortDirection()}
+            >
+              {inventoryStore.sortDirection === "desc"
+                ? t("home.controls.sortStrong")
+                : t("home.controls.sortLight")}
+              <Icon
+                name={inventoryStore.sortDirection === "desc" ? "arrow-down" : "arrow-up"}
+                size={13}
+              />
+            </button>
+            <button
+              type="button"
+              class="btn btn-quiet disabled:opacity-40 disabled:cursor-default"
+              disabled={exactMatches().length === 0 && nearMisses().length === 0}
+              onClick={handleLucky}
+            >
+              <Icon name="shuffle" size={14} />
+              {t("home.controls.surprise")}
+            </button>
           </div>
         </div>
-      </div>
 
-      <div class="px-8 lg:px-16 pt-8 max-w-[1700px] mx-auto relative min-h-[80vh] flex flex-col">
-        <div class="glass-ether border-white/5 rounded-3xl p-8 mb-8 space-y-6">
-          <div class="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-6">
-            <div class="flex items-center gap-6">
-              <div class="bg-white/[0.01] rounded-2xl p-5 border border-white/5 flex flex-col justify-center min-w-[200px]">
-                <span class="text-xs font-black uppercase tracking-widest text-white/30 mb-1">
-                  {t("home.cabinet.storage")}
-                </span>
-                <span class="text-3xl font-black text-primary">
-                  {inventoryStore.ownedIngredients.length} {t("home.cabinet.active")}
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsCabinetOpen(true)}
-                class="px-8 py-5 bg-primary text-black font-black uppercase tracking-widest text-xs rounded-2xl hover:scale-[1.02] active:scale-[0.98] transition-all shadow-primary-button"
-              >
-                ⚡ {t("home.cabinet.open")}
-              </button>
-            </div>
-
-            <div class="flex-1 grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div class="bg-white/[0.01] rounded-2xl p-4 border border-white/5 flex flex-col justify-center">
-                <div class="flex justify-between items-center mb-2">
-                  <label
-                    for="min-strength"
-                    class="text-xs font-black uppercase tracking-widest text-white/30"
-                  >
-                    {t("home.palate.potency")}
-                  </label>
-                  <span class="text-sm font-black text-primary">
-                    {inventoryStore.minStrength} / 5
-                  </span>
-                </div>
-                <input
-                  id="min-strength"
-                  type="range"
-                  min="0"
-                  max="5"
-                  step="1"
-                  value={inventoryStore.minStrength}
-                  class="range range-xs range-primary bg-white/5"
-                  onInput={(e) => inventoryStore.setMinStrength(parseInt(e.currentTarget.value))}
-                />
-              </div>
-
-              <div class="bg-white/[0.01] rounded-2xl p-4 border border-white/5 flex items-center justify-between">
-                <label for="allow-substitutes" class="flex flex-col cursor-pointer">
-                  <span class="text-xs font-black uppercase tracking-widest text-white/30">
-                    {t("home.cabinet.substitutes")}
-                  </span>
-                  <span class="text-xs font-bold text-white/60 mt-1">
-                    {t("home.cabinet.allowSubstitutes")}
-                  </span>
-                </label>
-                <input
-                  id="allow-substitutes"
-                  type="checkbox"
-                  checked={inventoryStore.allowSubstitutes}
-                  onChange={(e) => inventoryStore.setAllowSubstitutes(e.currentTarget.checked)}
-                  class="checkbox checkbox-primary"
-                />
-              </div>
-
-              <div class="flex items-center justify-end">
-                <div class="flex items-center p-1 bg-white/5 rounded-2xl border border-white/10 backdrop-blur-2xl transition-all hover:border-white/20 hover:bg-white/[0.08] shadow-2xl w-full">
-                  <button
-                    type="button"
-                    onClick={handleLucky}
-                    class="flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-widest text-white/60 hover:text-white hover:bg-white/5 transition-all flex items-center justify-center gap-2"
-                  >
-                    🎲 {t("home.results.randomize")}
-                  </button>
-
-                  <div class="w-px h-6 bg-white/10 mx-1" />
-
-                  <button
-                    type="button"
-                    aria-pressed={inventoryStore.showFavorites}
-                    class={`flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${
-                      inventoryStore.showFavorites
-                        ? "bg-secondary text-white shadow-lg"
-                        : "text-white/60 hover:text-white hover:bg-white/5"
-                    }`}
-                    onClick={() => inventoryStore.toggleShowFavorites()}
-                  >
-                    ❤️ {t("home.results.saved")}
-                  </button>
-
-                  <div class="w-px h-6 bg-white/10 mx-1" />
-
-                  <button
-                    type="button"
-                    aria-label={t("home.results.toggleSort") ?? "Toggle sort order"}
-                    class="px-4 py-3 rounded-xl text-xs font-black uppercase tracking-widest text-white/60 hover:text-white hover:bg-white/5 transition-all flex items-center justify-center"
-                    onClick={() => inventoryStore.toggleSortDirection()}
-                  >
-                    {inventoryStore.sortDirection === "desc" ? "↓" : "↑"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="flex flex-wrap items-center gap-6 pt-5 border-t border-white/5 text-xs text-white/40">
-            <div class="flex items-center gap-2">
-              <span class="font-black uppercase tracking-widest text-xs">
-                {t("home.inventory.quickKits")}
-              </span>
-              <div class="flex gap-4">
-                <For each={QUICK_KITS}>
-                  {(kit) => (
-                    <button
-                      type="button"
-                      onClick={() => addKit(kit.ingredients)}
-                      class="hover:text-primary transition-colors font-bold uppercase tracking-widest text-xs"
-                    >
-                      {kit.label}
-                    </button>
+        <div class="border-b border-rule py-3.5 flex flex-wrap items-center gap-x-10 gap-y-3">
+          <div class="flex items-center gap-3 flex-wrap">
+            <span class="eyebrow">{t("home.controls.filters")}</span>
+            <Show
+              when={filterCount() > 0}
+              fallback={
+                <span class="text-[13px] text-ink-faint">{t("home.controls.noFilters")}</span>
+              }
+            >
+              <div class="flex flex-wrap gap-1.5">
+                {/* A missing tool hides drinks too, so it is listed with the
+                    filters — otherwise a short list would have no visible cause. */}
+                <For each={inventoryStore.missingTools}>
+                  {(id) => (
+                    <Show when={findTag(id)}>
+                      {(tool) => (
+                        <button
+                          type="button"
+                          class="chip"
+                          aria-label={
+                            t("home.controls.restoreTool", { name: tName(tool()) }) ?? undefined
+                          }
+                          onClick={() => inventoryStore.toggleTool(id)}
+                        >
+                          {t("home.controls.withoutTool", { name: tName(tool()) })}
+                          <Icon name="close" size={11} />
+                        </button>
+                      )}
+                    </Show>
+                  )}
+                </For>
+                <For each={inventoryStore.selectedTags}>
+                  {(id) => (
+                    <Show when={findTag(id)}>
+                      {(tag) => (
+                        <button
+                          type="button"
+                          class="chip"
+                          aria-pressed="true"
+                          aria-label={
+                            t("home.controls.remove", { name: tName(tag()) }) ?? undefined
+                          }
+                          onClick={() => inventoryStore.toggleTag(id)}
+                        >
+                          {tName(tag())}
+                          <Icon name="close" size={11} />
+                        </button>
+                      )}
+                    </Show>
                   )}
                 </For>
               </div>
-            </div>
-
-            <div class="h-4 w-px bg-white/10 hidden md:block" />
-
-            <div class="flex items-center gap-2">
-              <span class="font-black uppercase tracking-widest text-xs">
-                {t("home.palate.filters")}
-              </span>
-              <Show
-                when={inventoryStore.selectedTags.length > 0}
-                fallback={<span class="italic text-sm">{t("home.palate.noFilters")}</span>}
-              >
-                <div class="flex flex-wrap gap-1.5">
-                  <For each={inventoryStore.selectedTags}>
-                    {(id) => (
-                      <Show when={findTag(id)}>
-                        {(tag) => (
-                          <button
-                            type="button"
-                            onClick={() => inventoryStore.toggleTag(id)}
-                            class="px-2.5 py-1 rounded bg-secondary/10 border border-secondary/20 text-xs font-bold text-secondary uppercase tracking-widest hover:bg-red-500/10 hover:border-red-500/30 hover:text-red-500 transition-all"
-                          >
-                            {tName(tag())} ✕
-                          </button>
-                        )}
-                      </Show>
-                    )}
-                  </For>
-                </div>
-              </Show>
-            </div>
+            </Show>
           </div>
         </div>
 
+        {/* Always occupies a hairline so results do not jump when a match runs. */}
         <div
-          class="h-1 w-full mb-8 relative overflow-hidden bg-white/5 rounded-full"
-          role="progressbar"
-          aria-hidden={!loading()}
-        >
-          <div
-            class={`absolute inset-0 bg-primary shadow-primary-md transition-all duration-500 ${
-              loading() ? "translate-x-0" : "-translate-x-full"
-            }`}
-            style={{ animation: loading() ? "loading-scan 2s infinite linear" : "none" }}
-          />
-        </div>
+          class="h-px"
+          classList={{ "progress-rule": loading() }}
+          role="status"
+          aria-label={loading() ? (t("common.loading") ?? "Loading") : undefined}
+        />
 
-        <div class="flex-1 relative">
-          <Show when={inventoryStore.ownedIngredients.length === 0}>
-            <div class="py-32 flex flex-col items-center text-center">
-              <span class="text-8xl mb-12 opacity-20 grayscale" aria-hidden="true">
-                🍸
-              </span>
-              <h3 class="text-[14px] font-black tracking-[1.2em] text-white/30 uppercase">
-                {t("home.results.cabinetIdle")}
-              </h3>
-            </div>
-          </Show>
-
-          <Show
-            when={
-              !loading() &&
-              inventoryStore.ownedIngredients.length > 0 &&
-              exactMatches().length === 0 &&
-              nearMisses().length === 0
-            }
-          >
-            <div class="py-32 flex flex-col items-center text-center">
-              <span class="text-6xl mb-12 opacity-20" aria-hidden="true">
-                {inventoryStore.showFavorites ? "💔" : "🕵️"}
-              </span>
-              <h3 class="text-[14px] font-black tracking-[0.8em] text-white/30 uppercase">
-                {inventoryStore.showFavorites
-                  ? t("home.results.noSavedProtocols")
-                  : t("home.results.noProtocolsMatched")}
-              </h3>
-              <p class="text-[11px] text-white/10 font-black uppercase tracking-[0.4em] mt-6">
-                {inventoryStore.showFavorites
-                  ? t("home.results.noSavedProtocolsSubtitle")
-                  : t("home.results.noProtocolsMatchedSubtitle")}
-              </p>
-              <button
-                type="button"
-                onClick={() =>
-                  inventoryStore.showFavorites
-                    ? inventoryStore.toggleShowFavorites()
-                    : inventoryStore.clear()
-                }
-                class="mt-12 px-8 py-3 border border-white/10 rounded-xl text-[11px] font-black uppercase tracking-widest text-white/30 hover:text-white hover:border-white/20 transition-all"
-              >
-                [{" "}
-                {inventoryStore.showFavorites
-                  ? t("home.results.deactivateFilter")
-                  : t("home.results.clearFilters")}{" "}
-                ]
+        <div class="pt-12" classList={{ "opacity-50": loading() }}>
+          <Show when={shelfIsEmpty()}>
+            {/* The masthead already says the shelf is empty and what to do;
+                a notice here repeating it made three statements of one fact. */}
+            <div class="py-12 border-y border-rule flex justify-center">
+              <button type="button" class="btn btn-outline" onClick={() => setIsShelfOpen(true)}>
+                {t("home.empty.shelf.action")}
               </button>
             </div>
+
+            {/* Starter shelves used to sit in the control bar as chips named
+                after drinks, beside the filters and styled like them. They read
+                as "show me drinks like a Negroni", but each one quietly added
+                four bottles to the shelf — and stayed there once the shelf was
+                full, one misclick from bottles the user does not own. Here they
+                only offer themselves to an empty shelf, and say what they add. */}
+            <section class="mt-14 max-w-4xl mx-auto" aria-labelledby="starters-title">
+              <h3 id="starters-title" class="eyebrow text-center">
+                {t("home.starters.title")}
+              </h3>
+              <ul class="mt-8 grid gap-x-8 gap-y-8 sm:grid-cols-3">
+                <For each={QUICK_KITS}>
+                  {(kit) => {
+                    const name = () => tDynamic(kit.translationKey, kit.label);
+                    return (
+                      <li class="border-t border-rule pt-4 flex flex-col">
+                        <span class="display text-[1.375rem]">{name()}</span>
+                        <p class="mt-2 flex-1 text-[14px] leading-[1.6] text-ink-muted">
+                          {kitIngredients(kit.ingredients)
+                            .map((ingredient) => tName(ingredient))
+                            .join(" · ")}
+                        </p>
+                        <button
+                          type="button"
+                          class="btn btn-outline mt-4 self-start"
+                          aria-label={t("home.starters.addLabel", { name: name() }) ?? undefined}
+                          onClick={() => addKit(kit.ingredients)}
+                        >
+                          <Icon name="plus" size={13} />
+                          {t("home.starters.add")}
+                        </button>
+                      </li>
+                    );
+                  }}
+                </For>
+              </ul>
+            </section>
           </Show>
 
-          <div
-            class={`transition-opacity duration-300 mt-12 ${
-              loading() ? "opacity-40 pointer-events-none" : "opacity-100"
-            }`}
-          >
-            <Show when={exactMatches().length > 0}>
-              <section class="mb-32 space-y-6">
-                <div class="flex items-center gap-4 border-b border-white/5 pb-2">
-                  <h2 class="text-[13px] font-black uppercase tracking-[0.4em] text-primary whitespace-nowrap">
-                    {t("home.results.readyToMix")}
-                  </h2>
-                  <div class="h-px flex-1 bg-gradient-to-r from-primary/20 to-transparent" />
-                  <div class="w-1.5 h-1.5 rounded-full bg-primary animate-pulse shadow-primary-md" />
-                </div>
-                <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-6">
-                  <For each={exactMatches()}>
-                    {(recipe, i) => (
-                      <div
-                        class="card-entrance"
-                        style={{ "animation-delay": `${(i() % 12) * 80}ms` }}
-                      >
-                        <RecipeCard
-                          recipe={recipe}
-                          onViewDetails={() => setSelectedRecipe(recipe)}
-                          substituteCount={recipe.substitutions?.length}
-                        />
-                      </div>
-                    )}
-                  </For>
-                </div>
-              </section>
-            </Show>
+          <Show when={!shelfIsEmpty() && error()}>
+            {(message) => (
+              <Notice title={t("home.error.title")} body={message()} tone="error">
+                <button
+                  type="button"
+                  class="btn btn-outline"
+                  onClick={() => setRetryToken((n) => n + 1)}
+                >
+                  {t("common.retry")}
+                </button>
+              </Notice>
+            )}
+          </Show>
 
-            <Show when={nearMisses().length > 0}>
-              <section class="space-y-6">
-                <div class="flex items-center gap-4 border-b border-white/5 pb-2">
-                  <h2 class="text-[13px] font-black uppercase tracking-[0.4em] text-white/40 whitespace-nowrap">
-                    {t("home.results.missingOne")}
-                  </h2>
-                  <div class="h-px flex-1 bg-gradient-to-r from-white/10 to-transparent" />
-                  <div class="w-1.5 h-1.5 rounded-full bg-white/20" />
-                </div>
-                <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-6">
-                  <For each={nearMisses()}>
-                    {(recipe, i) => (
-                      <div
-                        class="card-entrance"
-                        style={{ "animation-delay": `${(i() % 12) * 80}ms` }}
-                      >
-                        <RecipeCard
-                          recipe={recipe}
-                          onViewDetails={() => setSelectedRecipe(recipe)}
-                          missingIngredientName={missingNameFor(recipe)}
-                          substituteCount={recipe.substitutions?.length}
-                        />
-                      </div>
-                    )}
-                  </For>
-                </div>
-              </section>
-            </Show>
+          <Show when={nothingMatched() && inventoryStore.showFavorites}>
+            <Notice title={t("home.empty.saved.title")}>
+              <button
+                type="button"
+                class="btn btn-outline"
+                onClick={() => inventoryStore.toggleShowFavorites()}
+              >
+                {t("home.empty.saved.action")}
+              </button>
+            </Notice>
+          </Show>
 
-            <SiteFooter />
-          </div>
+          <Show when={nothingMatched() && !inventoryStore.showFavorites}>
+            <Notice title={t("home.empty.none.title")}>
+              <button type="button" class="btn btn-outline" onClick={() => inventoryStore.clear()}>
+                {t("home.empty.none.action")}
+              </button>
+            </Notice>
+          </Show>
+
+          <Show when={exactMatches().length > 0}>
+            <section class="mb-20 fade-in">
+              <SectionHead title={t("home.section.ready")} count={exactMatches().length} />
+              <CardGrid>
+                <For each={exactMatches()}>
+                  {(recipe) => <RecipeCard recipe={recipe} match={recipe} hideReady />}
+                </For>
+              </CardGrid>
+            </section>
+          </Show>
+
+          <Show when={buys().length > 0}>
+            <section class="mb-20 fade-in">
+              <SectionHead title={t("home.section.buyNext")} />
+              <ol class="border-t border-rule">
+                <For each={buys()}>
+                  {(buy, i) => (
+                    <Show when={findIngredient(buy.ingredientId)}>
+                      {(ingredient) => (
+                        <li class="flex items-baseline gap-4 py-4 border-b border-rule">
+                          <span class="meta tabular w-6 shrink-0">
+                            {String(i() + 1).padStart(2, "0")}
+                          </span>
+                          <div class="flex-1 min-w-0 sm:flex sm:items-baseline sm:gap-8">
+                            <p class="sm:w-72 shrink-0">
+                              <span class="display text-[1.25rem]">{tName(ingredient())}</span>
+                              <span class="meta ml-2.5">{tCategory(ingredient().category)}</span>
+                            </p>
+                            <p class="mt-1 sm:mt-0 text-[14px] text-ink-muted">
+                              <span class="font-mono text-accent tabular mr-2.5">
+                                +{buy.recipes.length}
+                              </span>
+                              <For each={buy.recipes}>
+                                {(recipe, j) => (
+                                  <>
+                                    <Show when={j() > 0}>
+                                      <span class="text-rule-strong"> · </span>
+                                    </Show>
+                                    <a
+                                      href={sheet.href(recipe)}
+                                      onClick={sheet.follow(recipe)}
+                                      class="underline-offset-4 decoration-1 hover:text-ink hover:underline"
+                                    >
+                                      {tName(recipe)}
+                                    </a>
+                                  </>
+                                )}
+                              </For>
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            class="btn btn-quiet shrink-0 self-center"
+                            aria-label={
+                              t("home.buyNext.addLabel", { name: tName(ingredient()) }) ?? undefined
+                            }
+                            onClick={() => inventoryStore.addIngredients([buy.ingredientId])}
+                          >
+                            <Icon name="plus" size={13} />
+                            {/* The label costs the names their line on a phone; the
+                                button keeps its aria-label either way. */}
+                            <span class="hidden sm:inline">{t("home.buyNext.add")}</span>
+                          </button>
+                        </li>
+                      )}
+                    </Show>
+                  )}
+                </For>
+              </ol>
+            </section>
+          </Show>
+
+          <Show when={nearMisses().length > 0}>
+            <section class="fade-in">
+              <SectionHead title={t("home.section.oneAway")} count={nearMisses().length} />
+              <CardGrid>
+                <For each={nearMisses()}>
+                  {(recipe) => <RecipeCard recipe={recipe} match={recipe} />}
+                </For>
+              </CardGrid>
+            </section>
+          </Show>
+
+          <SiteFooter />
         </div>
-      </div>
+      </Page>
     </Layout>
   );
 };

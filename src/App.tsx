@@ -7,32 +7,30 @@ const Home = lazy(() => import("./pages/Home.tsx"));
 const RecipeGallery = lazy(() => import("./pages/RecipeGallery.tsx"));
 const SavedRecipes = lazy(() => import("./pages/SavedRecipes.tsx"));
 
+/**
+ * Rendered outside the I18nProvider — if the provider itself is what threw,
+ * calling `t` here would throw again — so the two strings stay in English.
+ */
 function Fallback(props: { error: unknown; reset: () => void }) {
   return (
-    <div class="min-h-screen flex flex-col items-center justify-center gap-8 bg-black text-white p-8 text-center">
-      <span class="text-7xl opacity-20" aria-hidden="true">
-        🥃
-      </span>
-      <h1 class="text-2xl font-black uppercase tracking-[0.4em] text-white/40">
-        Something spilled
-      </h1>
-      <p class="text-xs text-white/20 max-w-md break-words">
-        {props.error instanceof Error ? props.error.message : String(props.error)}
-      </p>
-      <button
-        type="button"
-        onClick={props.reset}
-        class="px-8 py-3 border border-white/10 rounded-xl text-[11px] font-black uppercase tracking-widest text-white/40 hover:text-white hover:border-white/20 transition-all"
-      >
-        [ Retry ]
-      </button>
+    <div class="min-h-screen bg-paper flex items-center justify-center p-8">
+      <div class="max-w-md text-center">
+        <span class="eyebrow">Error</span>
+        <h1 class="display mt-3 text-4xl">Something went wrong</h1>
+        <p class="mt-4 font-mono text-[12px] text-ink-muted break-words">
+          {props.error instanceof Error ? props.error.message : String(props.error)}
+        </p>
+        <button type="button" onClick={props.reset} class="btn btn-outline mt-8">
+          Try again
+        </button>
+      </div>
     </div>
   );
 }
 
 function App() {
   return (
-    <div class="min-h-screen bg-base-100 text-base-content font-sans relative">
+    <div class="min-h-screen bg-paper text-ink">
       <ErrorBoundary fallback={(error, reset) => <Fallback error={error} reset={reset} />}>
         <I18nProvider>
           <Suspense>

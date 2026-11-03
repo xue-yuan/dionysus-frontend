@@ -35,3 +35,15 @@ export function findTag(id: string | undefined): Tag | undefined {
   if (!id) return undefined;
   return tagList().find((t) => t.id === id);
 }
+
+/**
+ * A tag as the archive's URL names it: `tag.party_drink` becomes
+ * `party-drink`, the same shape as a recipe slug.
+ */
+export function tagSlug(tag: Tag): string {
+  return (tag.translation_key ?? "").replace(/^tag\./, "").replaceAll("_", "-");
+}
+
+export function findTagBySlug(slug: string): Tag | undefined {
+  return tagList().find((t) => tagSlug(t) === slug);
+}

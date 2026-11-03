@@ -1,16 +1,77 @@
 import type { Component } from "solid-js";
-import { For, Show, createSignal, createEffect, onCleanup, untrack } from "solid-js";
+import { For, Show, createSignal, createEffect, createMemo, onCleanup, untrack } from "solid-js";
+import { useSearchParams } from "@solidjs/router";
 import { RecipeCard } from "../components/RecipeCard";
 import { RecipeDetailModal } from "../components/RecipeDetailModal";
-import { Layout, SiteFooter } from "../components/Layout";
+import { Layout, Page, SiteFooter } from "../components/Layout";
+import { Masthead, SearchField, Notice, CardGrid } from "../components/Editorial";
+import { Icon } from "../components/Icon";
 import { recipeService } from "../services/recipeService";
-import type { Recipe } from "../types";
+import type { Recipe, Tag } from "../types";
 import { useI18n } from "../i18n";
+import { findTagBySlug, tagList, tagSlug } from "../data/catalog";
+import { shelfMatch } from "../data/shelfMatches";
 
 const PAGE_SIZE = 12;
 
+/**
+ * The base spirits offered as a filter, matched against each ingredient's
+ * `base` column — not its family. Family decides what may substitute, base
+ * what kind of drink it is: Pisco Sour belongs under brandy even though Pisco
+ * may not stand in for Cognac.
+ */
+const BASES = [
+  { base: "Whiskey", key: "base.whiskey" },
+  { base: "Gin", key: "base.gin" },
+  { base: "Rum", key: "base.rum" },
+  { base: "Agave", key: "base.agave" },
+  { base: "Brandy", key: "base.brandy" },
+  { base: "Vodka", key: "base.vodka" },
+] as const;
+
+const TAG_GROUPS = ["Style", "Palate", "Equipment"] as const;
+
 const RecipeGallery: Component = () => {
-  const { t } = useI18n();
+  const { t, tCount, tName, tTagType, searchKeys } = useI18n();
+
+  /*
+   * Filters live in the URL — `?base=gin&tags=tiki,fruity` — so a filtered view
+   * can be linked, and a tag in the recipe sheet can open the archive already
+   * narrowed to it. Changes replace the entry rather than push one, so Back
+   * leaves the page instead of stepping through every chip clicked.
+   */
+  const [params, setParams] = useSearchParams();
+  const [moreOpen, setMoreOpen] = createSignal(false);
+
+  const base = () => BASES.find((b) => b.base.toLowerCase() === params.base);
+
+  const activeTags = createMemo(() => {
+    const raw = typeof params.tags === "string" ? params.tags : "";
+    return raw
+      .split(",")
+      .map((slug) => findTagBySlug(slug))
+      .filter((tag): tag is Tag => Boolean(tag));
+  });
+
+  const isActive = (tag: Tag) => activeTags().some((active) => active.id === tag.id);
+
+  const setFilters = (next: { base?: string | null; tags?: Tag[] }) =>
+    setParams(
+      {
+        ...("base" in next ? { base: next.base?.toLowerCase() ?? undefined } : {}),
+        ...("tags" in next ? { tags: next.tags?.map(tagSlug).join(",") || undefined } : {}),
+      },
+      { replace: true, scroll: false },
+    );
+
+  const toggleTag = (tag: Tag) =>
+    setFilters({
+      tags: isActive(tag)
+        ? activeTags().filter((active) => active.id !== tag.id)
+        : [...activeTags(), tag],
+    });
+
+  const hasFilters = () => Boolean(base()) || activeTags().length > 0;
 
   const [recipes, setRecipes] = createSignal<Recipe[]>([]);
   const [page, setPage] = createSignal(1);
@@ -18,7 +79,6 @@ const RecipeGallery: Component = () => {
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [sortDirection, setSortDirection] = createSignal<"asc" | "desc">("desc");
-  const [selectedRecipe, setSelectedRecipe] = createSignal<Recipe | null>(null);
   const [totalRecipes, setTotalRecipes] = createSignal(0);
   const [searchQuery, setSearchQuery] = createSignal("");
   const [debouncedSearch, setDebouncedSearch] = createSignal("");
@@ -35,12 +95,17 @@ const RecipeGallery: Component = () => {
     setError(null);
 
     try {
+      const search = untrack(debouncedSearch);
       const response = await recipeService.getRecipes(
         {
           page: reset ? 1 : untrack(page),
           limit: PAGE_SIZE,
           sort: untrack(sortDirection),
-          search: untrack(debouncedSearch),
+          search,
+          // Resolved here rather than on the server, which holds no Chinese.
+          keys: searchKeys(search),
+          tagIds: untrack(activeTags).map((tag) => tag.id),
+          base: untrack(base)?.base,
         },
         controller.signal,
       );
@@ -86,6 +151,13 @@ const RecipeGallery: Component = () => {
   createEffect(() => {
     sortDirection();
     debouncedSearch();
+    base();
+    // A tag filter in the URL means nothing until the catalogue can resolve
+    // its slug; fetching before that would show the whole book for a moment.
+    if (params.tags && tagList().length === 0) return;
+    activeTags()
+      .map((tag) => tag.id)
+      .join(",");
     untrack(() => {
       setHasMore(true);
       void fetchRecipes(true);
@@ -96,128 +168,164 @@ const RecipeGallery: Component = () => {
 
   return (
     <Layout scroll="scroll-container" onScroll={handleScroll}>
-      <RecipeDetailModal recipe={selectedRecipe()} onClose={() => setSelectedRecipe(null)} />
+      <RecipeDetailModal rows={recipes()} />
 
-      <div class="px-8 lg:px-16 pt-0 max-w-[1700px] mx-auto relative min-h-[80vh] flex flex-col gap-8">
-        <div class="sticky top-0 z-30 pt-4 pb-6 px-4 bg-transparent backdrop-blur-sm -mx-4">
-          <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
-            <div class="relative flex-grow max-w-md">
-              <input
-                type="search"
-                aria-label={t("recipeGallery.searchPlaceholder") ?? undefined}
-                placeholder={t("recipeGallery.searchPlaceholder")}
-                class="input-studio w-full pr-10"
-                value={searchQuery()}
-                onInput={(e) => setSearchQuery(e.currentTarget.value)}
-              />
-              <Show when={searchQuery()}>
-                <button
-                  type="button"
-                  aria-label={t("home.inventory.clearSearch") ?? "Clear"}
-                  onClick={() => setSearchQuery("")}
-                  class="absolute right-3 top-1/2 -translate-y-1/2 text-white/20 hover:text-white"
-                >
-                  ✕
-                </button>
-              </Show>
-            </div>
+      <Page>
+        <Masthead
+          eyebrow={t("archive.eyebrow")}
+          title={t("archive.title") ?? ""}
+          meta={<p class="meta">{tCount("archive.count", totalRecipes())}</p>}
+        />
 
-            <div class="flex items-center p-1 bg-white/5 rounded-2xl border border-white/10 backdrop-blur-2xl transition-all hover:border-white/20 hover:bg-white/[0.1] shadow-2xl self-end sm:self-auto h-12">
-              <div class="px-8 flex items-center gap-4 whitespace-nowrap">
-                <span class="text-[13px] font-black uppercase tracking-[0.4em] text-white/60">
-                  {t("recipeGallery.verified", { count: totalRecipes() })}
-                </span>
-              </div>
-
-              <div class="w-px h-6 bg-white/10 mx-2" />
-
-              <button
-                type="button"
-                class="px-8 h-full rounded-xl text-[13px] font-black uppercase tracking-widest text-white/60 hover:text-white hover:bg-white/5 transition-all flex items-center justify-center gap-3"
-                onClick={() => setSortDirection((prev) => (prev === "desc" ? "asc" : "desc"))}
-              >
-                {sortDirection() === "desc" ? t("home.results.strong") : t("home.results.light")}
-                <span class="text-primary text-lg" aria-hidden="true">
-                  {sortDirection() === "desc" ? "↓" : "↑"}
-                </span>
-              </button>
-            </div>
-          </div>
+        <div class="sticky top-0 z-30 bg-paper border-y border-rule py-3 flex flex-wrap items-center justify-between gap-x-8 gap-y-3">
+          <SearchField value={searchQuery()} onInput={setSearchQuery} label={t("archive.search")} />
+          <button
+            type="button"
+            class="btn btn-quiet -mr-3"
+            onClick={() => setSortDirection((prev) => (prev === "desc" ? "asc" : "desc"))}
+          >
+            {sortDirection() === "desc"
+              ? t("home.controls.sortStrong")
+              : t("home.controls.sortLight")}
+            <Icon name={sortDirection() === "desc" ? "arrow-down" : "arrow-up"} size={13} />
+          </button>
         </div>
 
-        <div
-          class={`transition-opacity duration-300 ${loading() ? "opacity-40 pointer-events-none" : "opacity-100"}`}
-        >
-          <Show when={error()}>
-            {(message) => (
-              <div class="col-span-full mb-8 p-6 rounded-2xl border border-red-500/20 bg-red-500/5 text-center">
-                <p class="text-sm font-black uppercase tracking-widest text-red-400">
-                  {t("recipeGallery.loadFailed")}
-                </p>
-                <p class="text-xs text-white/30 mt-2">{message()}</p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setHasMore(true);
-                    void fetchRecipes(true);
-                  }}
-                  class="mt-6 px-6 py-2 border border-white/10 rounded-xl text-[11px] font-black uppercase tracking-widest text-white/40 hover:text-white transition-all"
-                >
-                  {t("recipeGallery.retry")}
-                </button>
-              </div>
-            )}
-          </Show>
+        <div class="border-b border-rule py-3.5 flex flex-wrap items-center gap-x-10 gap-y-3">
+          <div class="flex items-center gap-3 flex-wrap">
+            <span class="eyebrow">{t("archive.filter.base")}</span>
+            <div class="flex flex-wrap gap-1.5">
+              <For each={BASES}>
+                {(entry) => (
+                  <button
+                    type="button"
+                    class="chip"
+                    aria-pressed={base()?.base === entry.base}
+                    onClick={() =>
+                      setFilters({ base: base()?.base === entry.base ? null : entry.base })
+                    }
+                  >
+                    {t(entry.key)}
+                  </button>
+                )}
+              </For>
+            </div>
+          </div>
 
-          <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-6 min-h-[400px]">
-            <Show when={recipes().length === 0 && !loading() && !error()}>
-              <div class="col-span-full py-48 flex flex-col items-center text-center glass-ether rounded-[4rem] border-dashed border-white/5">
-                <div class="text-8xl mb-12 opacity-10 grayscale" aria-hidden="true">
-                  📜
-                </div>
-                <h3 class="text-3xl font-black text-white/20 mb-4 tracking-widest uppercase">
-                  {t("recipeGallery.archiveVacant")}
-                </h3>
-                <p class="text-[11px] text-white/10 font-black uppercase tracking-[0.6em]">
-                  {t("recipeGallery.initialSync")}
-                </p>
+          <div class="flex items-center gap-3 flex-wrap">
+            <button
+              type="button"
+              class="eyebrow inline-flex items-center gap-1.5 hover:text-ink transition-colors"
+              aria-expanded={moreOpen()}
+              aria-controls="archive-tag-filters"
+              onClick={() => setMoreOpen((open) => !open)}
+            >
+              {t("archive.filter.more")}
+              <Icon
+                name="chevron-right"
+                size={11}
+                class={`transition-transform ${moreOpen() ? "rotate-90" : ""}`}
+              />
+            </button>
+            {/* With the panel shut, what is applied still has to be visible. */}
+            <Show when={!moreOpen()}>
+              <div class="flex flex-wrap gap-1.5">
+                <For each={activeTags()}>
+                  {(tag) => (
+                    <button
+                      type="button"
+                      class="chip"
+                      aria-pressed="true"
+                      aria-label={t("home.controls.remove", { name: tName(tag) }) ?? undefined}
+                      onClick={() => toggleTag(tag)}
+                    >
+                      {tName(tag)}
+                      <Icon name="close" size={11} />
+                    </button>
+                  )}
+                </For>
               </div>
             </Show>
+          </div>
 
-            <For each={recipes()}>
-              {(recipe, i) => (
-                <div class="card-entrance" style={{ "animation-delay": `${(i() % 12) * 80}ms` }}>
-                  <RecipeCard recipe={recipe} onViewDetails={() => setSelectedRecipe(recipe)} />
+          <Show when={hasFilters()}>
+            <button
+              type="button"
+              class="ml-auto text-[13px] text-ink-muted underline underline-offset-4 decoration-1 hover:text-ink"
+              onClick={() => setFilters({ base: null, tags: [] })}
+            >
+              {t("archive.filter.clear")}
+            </button>
+          </Show>
+        </div>
+
+        <Show when={moreOpen()}>
+          <div id="archive-tag-filters" class="border-b border-rule py-4 space-y-3">
+            <For each={TAG_GROUPS}>
+              {(type) => (
+                <div class="flex flex-col sm:flex-row sm:items-baseline gap-2 sm:gap-4">
+                  <span class="eyebrow sm:w-20 shrink-0">{tTagType(type)}</span>
+                  <div class="flex flex-wrap gap-1.5">
+                    <For each={tagList().filter((tag) => tag.type === type)}>
+                      {(tag) => (
+                        <button
+                          type="button"
+                          class="chip"
+                          aria-pressed={isActive(tag)}
+                          onClick={() => toggleTag(tag)}
+                        >
+                          {tName(tag)}
+                        </button>
+                      )}
+                    </For>
+                  </div>
                 </div>
               )}
             </For>
           </div>
+        </Show>
 
-          <div class="py-40 flex justify-center">
-            <Show when={loading()}>
-              <div
-                class="relative w-16 h-16"
-                role="status"
-                aria-label={t("recipeGallery.loading") ?? "Loading"}
-              >
-                <div class="absolute inset-0 border-4 border-primary/10 rounded-full" />
-                <div class="absolute inset-0 border-4 border-t-primary rounded-full animate-spin" />
-              </div>
-            </Show>
-            <Show when={!hasMore() && recipes().length > 0 && !loading()}>
-              <div class="flex items-center gap-12 w-full max-w-4xl mx-auto">
-                <div class="h-px flex-grow bg-gradient-to-r from-transparent to-white/10" />
-                <span class="text-[10px] font-black uppercase tracking-[0.8em] text-white/10 shrink-0">
-                  {t("recipeGallery.terminalReached")}
-                </span>
-                <div class="h-px flex-grow bg-gradient-to-l from-transparent to-white/10" />
-              </div>
-            </Show>
-          </div>
+        <div class="h-px" classList={{ "progress-rule": loading() }} role="status" />
+
+        <div class="pt-12">
+          <Show when={error()}>
+            {(message) => (
+              <Notice title={t("archive.loadFailed")} body={message()} tone="error">
+                <button
+                  type="button"
+                  class="btn btn-outline"
+                  onClick={() => {
+                    setHasMore(true);
+                    void fetchRecipes(true);
+                  }}
+                >
+                  {t("common.retry")}
+                </button>
+              </Notice>
+            )}
+          </Show>
+
+          <Show when={recipes().length === 0 && !loading() && !error()}>
+            <Notice title={t("archive.empty.title")} />
+          </Show>
+
+          <CardGrid>
+            <For each={recipes()}>
+              {(recipe) => <RecipeCard recipe={recipe} match={shelfMatch(recipe.id)} />}
+            </For>
+          </CardGrid>
+
+          <Show when={!hasMore() && recipes().length > 0 && !loading()}>
+            <div class="pt-16 flex items-center gap-6">
+              <span class="h-px flex-1 bg-rule" aria-hidden="true" />
+              <span class="eyebrow">{t("archive.end")}</span>
+              <span class="h-px flex-1 bg-rule" aria-hidden="true" />
+            </div>
+          </Show>
 
           <SiteFooter />
         </div>
-      </div>
+      </Page>
     </Layout>
   );
 };
