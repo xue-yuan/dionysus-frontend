@@ -7,7 +7,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://REPLACE-WITH-API-PROJECT.invalid/api/:path*"
+      "destination": "https://dionysus-phi.vercel.app/api/:path*"
     },
     { "source": "/(.*)", "destination": "/index.html" }
   ],
