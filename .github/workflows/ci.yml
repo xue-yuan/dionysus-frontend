@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
       - uses: actions/setup-node@v4
         with:
@@ -21,8 +21,6 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # tsc carries the locale key assertions, so a key added to one dictionary
-      # and not the other fails here rather than falling back at runtime.
       - run: pnpm exec tsc -b
 
       - run: pnpm exec vp lint
